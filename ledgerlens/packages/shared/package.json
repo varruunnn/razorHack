@@ -1,0 +1,13 @@
+{
+  "name": "@ledgerlens/shared",
+  "version": "0.1.0",
+  "main": "index.ts",
+  "types": "index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"linting shared\""
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  }
+}
