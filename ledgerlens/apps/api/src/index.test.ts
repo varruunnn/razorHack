@@ -1,8 +1,8 @@
 import {test,expect} from "bun:test";
 import {buildApp,ApiErrorResponse} from "./app";
 import {Settlement} from "@ledgerlens/shared";
+const app=buildApp();
 test("GET /health returns 200 with status ok",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"GET",
     url:"/health"
@@ -13,7 +13,6 @@ test("GET /health returns 200 with status ok",async()=>{
   expect(json.service).toBe("ledgerlens-api");
 });
 test("Valid POST /ingestions returns 200",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -32,7 +31,6 @@ test("Valid POST /ingestions returns 200",async()=>{
   expect(json.rejected.length).toBe(0);
 });
 test("Accepted records are returned normalized",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -51,7 +49,6 @@ test("Accepted records are returned normalized",async()=>{
   expect(json.records[0].currency).toBe("USD");
 });
 test("Rejected records are returned with typed rejection reasons",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -72,7 +69,6 @@ test("Rejected records are returned with typed rejection reasons",async()=>{
   expect(json.rejected[2].reason).toBe("INVALID_AMOUNT");
 });
 test("Mixed valid and invalid batch returns correct acceptedCount and rejectedCount",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -95,7 +91,6 @@ test("Mixed valid and invalid batch returns correct acceptedCount and rejectedCo
   expect(json.rejected[0].index).toBe(1);
 });
 test("Empty records array returns 200 with zero counts",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -111,7 +106,6 @@ test("Empty records array returns 200 with zero counts",async()=>{
   expect(json.rejected).toEqual([]);
 });
 test("Missing records field returns 400 INVALID_REQUEST",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -122,7 +116,6 @@ test("Missing records field returns 400 INVALID_REQUEST",async()=>{
   expect(json.error.code).toBe("INVALID_REQUEST");
 });
 test("records not being an array returns 400 INVALID_REQUEST",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -135,7 +128,6 @@ test("records not being an array returns 400 INVALID_REQUEST",async()=>{
   expect(json.error.code).toBe("INVALID_REQUEST");
 });
 test("Batch with 1001 records returns 413 BATCH_TOO_LARGE",async()=>{
-  const app=buildApp();
   const largeBatch=[];
   for(let i=0;i<1001;i++){
     largeBatch.push({id:`p_${i}`,type:"PAYMENT",amount:10,currency:"USD",timestamp:"2026-01-01T00:00:00Z"});
@@ -152,7 +144,6 @@ test("Batch with 1001 records returns 413 BATCH_TOO_LARGE",async()=>{
   expect(json.error.code).toBe("BATCH_TOO_LARGE");
 });
 test("Batch with exactly 1000 records is processed",async()=>{
-  const app=buildApp();
   const batch=[];
   for(let i=0;i<1000;i++){
     batch.push({id:`p_${i}`,type:"PAYMENT",amount:10,currency:"USD",timestamp:"2026-01-01T00:00:00Z"});
@@ -170,7 +161,6 @@ test("Batch with exactly 1000 records is processed",async()=>{
   expect(json.rejectedCount).toBe(0);
 });
 test("Malformed JSON returns clean 400 INVALID_REQUEST",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -186,7 +176,6 @@ test("Malformed JSON returns clean 400 INVALID_REQUEST",async()=>{
   expect(typeof json.error.message).toBe("string");
 });
 test("The API does not mutate request records",async()=>{
-  const app=buildApp();
   const originalRecord={id:"p1",type:"payment",amount:"100.50",currency:"usd",timestamp:1767225600};
   const copy={...originalRecord};
   await app.inject({
@@ -199,7 +188,6 @@ test("The API does not mutate request records",async()=>{
   expect(originalRecord).toEqual(copy);
 });
 test("The API response does not expose hidden reconciliation linkage",async()=>{
-  const app=buildApp();
   const res=await app.inject({
     method:"POST",
     url:"/ingestions",
@@ -217,7 +205,6 @@ test("The API response does not expose hidden reconciliation linkage",async()=>{
   expect(stl.linkedSettlementIds).toBeUndefined();
 });
 test("Existing GET /health continues working alongside POST /ingestions",async()=>{
-  const app=buildApp();
   const healthRes=await app.inject({method:"GET",url:"/health"});
   expect(healthRes.statusCode).toBe(200);
   const ingestRes=await app.inject({method:"POST",url:"/ingestions",payload:{records:[]}});

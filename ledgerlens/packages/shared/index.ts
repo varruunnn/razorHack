@@ -64,3 +64,11 @@ export interface GenerateOptions{
   flowCount:number;
   seed:number;
 }
+export type CandidateReason="EXACT_REFERENCE"|"AMOUNT_COMPATIBLE"|"TIME_WINDOW_COMPATIBLE"|"CURRENCY_COMPATIBLE";
+export interface CandidateMatch{
+  sourceRecordId:string;
+  targetRecordId:string;
+  sourceType:FinancialRecord["type"];
+  targetType:FinancialRecord["type"];
+  reasons:CandidateReason[];
+}

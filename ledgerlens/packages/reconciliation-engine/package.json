@@ -5,12 +5,15 @@
   "types": "index.ts",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "lint": "echo \"linting reconciliation-engine\""
   },
   "dependencies": {
     "@ledgerlens/shared": "workspace:*"
   },
   "devDependencies": {
+    "@ledgerlens/synthetic-data": "workspace:*",
+    "@types/bun": "^1.4.0",
     "typescript": "latest"
   }
 }

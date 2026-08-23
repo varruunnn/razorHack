@@ -90,3 +90,32 @@ To run the ingestion tests:
 cd packages/ingestion
 bun test
 ```
+
+## Reconciliation Engine: Candidate Discovery (Phase 3A)
+
+The `reconciliation-engine` package provides deterministic candidate discovery across canonical `FinancialRecord` arrays.
+
+- **Purpose**: Generates potential relationship candidate pairs without making final match decisions.
+- **Supported directional pairs**:
+  - `ORDER -> PAYMENT`
+  - `PAYMENT -> SETTLEMENT`
+  - `PAYMENT -> REFUND`
+  - `PAYMENT -> ADJUSTMENT`
+  - `SETTLEMENT -> BANK_ENTRY`
+- **Compatibility prerequisites**:
+  - Exact currency match (`CURRENCY_COMPATIBLE`).
+  - Valid timestamp ordering within 7 days / $604,800,000\text{ ms}$ (`TIME_WINDOW_COMPATIBLE`).
+  - Pair-specific amount rules (`AMOUNT_COMPATIBLE`):
+    - `ORDER -> PAYMENT`: Exact equality (`source.amount === target.amount`).
+    - `PAYMENT -> SETTLEMENT`: Subset / equal (`target.amount <= source.amount`).
+    - `PAYMENT -> REFUND`: Subset / equal (`target.amount <= source.amount`).
+    - `PAYMENT -> ADJUSTMENT`: Absolute value bounded (`Math.abs(target.amount) <= source.amount`).
+    - `SETTLEMENT -> BANK_ENTRY`: Exact equality (`source.amount === target.amount`).
+- **Reference evidence**: Exact string match adds `EXACT_REFERENCE` (deterministic reason order: `EXACT_REFERENCE`, `CURRENCY_COMPATIBLE`, `AMOUNT_COMPATIBLE`, `TIME_WINDOW_COMPATIBLE`).
+- **Ambiguity preservation**: Multiple candidates per source record are preserved without scoring or premature resolution.
+
+To run the reconciliation engine tests:
+```sh
+cd packages/reconciliation-engine
+bun test
+```

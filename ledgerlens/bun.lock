@@ -68,6 +68,8 @@
         "@ledgerlens/shared": "workspace:*",
       },
       "devDependencies": {
+        "@ledgerlens/synthetic-data": "workspace:*",
+        "@types/bun": "^1.4.0",
         "typescript": "latest",
       },
     },
