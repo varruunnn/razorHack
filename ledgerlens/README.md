@@ -119,3 +119,19 @@ To run the reconciliation engine tests:
 cd packages/reconciliation-engine
 bun test
 ```
+
+## Reconciliation Engine: Candidate Resolution (Phase 3B)
+
+The `reconciliation-engine` provides deterministic candidate resolution (`resolveCandidates`) across canonical records and discovered candidate matches.
+
+- **Supported Source Types**: `ORDER`, `PAYMENT`, and `SETTLEMENT` records receive exactly one resolution result. Terminal targets (`REFUND`, `ADJUSTMENT`, `BANK_ENTRY`) do not independently generate source resolution results.
+- **Evidence Weighting Model**:
+  - `EXACT_REFERENCE`: 100
+  - `AMOUNT_COMPATIBLE`: 20
+  - `CURRENCY_COMPATIBLE`: 10
+  - `TIME_WINDOW_COMPATIBLE`: 10
+- **Statuses**:
+  - `UNMATCHED`: Source record has zero candidate matches (`evidenceScore: 0`, `reasons: []`, `matchedRecordIds: []`, `candidateRecordIds: []`).
+  - `RESOLVED`: Exactly one candidate holds the strictly highest evidence score (`matchedRecordIds: [winner]`, `candidateRecordIds: rankedList`, `evidenceScore: highestScore`, `reasons: winnerReasons`).
+  - `AMBIGUOUS`: Two or more candidates tie for the highest evidence score (`matchedRecordIds: []`, `candidateRecordIds: competingWinnersLexicographicallySorted`, `evidenceScore: highestScore`, `reasons: []`). Lower-scoring candidates are omitted from `candidateRecordIds`.
+- **Determinism**: Results and candidates are sorted deterministically, ensuring that input ordering differences never impact semantic output.

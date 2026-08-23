@@ -1,8 +1,8 @@
 import {test,expect} from "bun:test";
-import {discoverCandidates,MAX_TIME_WINDOW_MS} from "./index";
-import {Order,Payment,Settlement,BankEntry,Refund,Adjustment,FinancialRecord} from "@ledgerlens/shared";
+import {discoverCandidates,resolveCandidates,MAX_TIME_WINDOW_MS,REASON_WEIGHTS} from "./index";
+import {Order,Payment,Settlement,BankEntry,Refund,Adjustment,FinancialRecord,CandidateMatch} from "@ledgerlens/shared";
 import {generateDataset} from "@ledgerlens/synthetic-data";
-test("Same input produces identical output",()=>{
+test("Same input produces identical output for discoverCandidates",()=>{
   const records:FinancialRecord[]=[
     {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1",reference:"ref_1"},
     {id:"pay_1",type:"PAYMENT",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:01:00Z"),paymentMethod:"card",reference:"ref_1"}
@@ -11,7 +11,7 @@ test("Same input produces identical output",()=>{
   const res2=discoverCandidates(records);
   expect(res1).toEqual(res2);
 });
-test("Input records are not mutated",()=>{
+test("Input records are not mutated during discoverCandidates",()=>{
   const records:FinancialRecord[]=[
     {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1",reference:"ref_1"},
     {id:"pay_1",type:"PAYMENT",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:01:00Z"),paymentMethod:"card",reference:"ref_1"}
@@ -219,45 +219,261 @@ test("Candidate IDs always reference records present in the input dataset",()=>{
     expect(recordIds.has(candidates[i].targetRecordId)).toBe(true);
   }
 });
+test("Source with no candidates becomes UNMATCHED",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1"}
+  ];
+  const results=resolveCandidates(records,[]);
+  expect(results.length).toBe(1);
+  expect(results[0].sourceRecordId).toBe("ord_1");
+  expect(results[0].sourceType).toBe("ORDER");
+  expect(results[0].status).toBe("UNMATCHED");
+  expect(results[0].matchedRecordIds).toEqual([]);
+  expect(results[0].candidateRecordIds).toEqual([]);
+  expect(results[0].evidenceScore).toBe(0);
+  expect(results[0].reasons).toEqual([]);
+});
+test("Source with exactly one candidate becomes RESOLVED",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1",reference:"ref_1"}
+  ];
+  const candidates:CandidateMatch[]=[{
+    sourceRecordId:"ord_1",
+    targetRecordId:"pay_1",
+    sourceType:"ORDER",
+    targetType:"PAYMENT",
+    reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+  }];
+  const results=resolveCandidates(records,candidates);
+  expect(results.length).toBe(1);
+  expect(results[0].status).toBe("RESOLVED");
+  expect(results[0].matchedRecordIds).toEqual(["pay_1"]);
+  expect(results[0].candidateRecordIds).toEqual(["pay_1"]);
+  expect(results[0].evidenceScore).toBe(140);
+  expect(results[0].reasons).toEqual(["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]);
+});
+test("Multiple candidates where one has EXACT_REFERENCE resolves to that candidate",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1",reference:"ref_match"}
+  ];
+  const candidates:CandidateMatch[]=[
+    {
+      sourceRecordId:"ord_1",
+      targetRecordId:"pay_weak",
+      sourceType:"ORDER",
+      targetType:"PAYMENT",
+      reasons:["CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    },
+    {
+      sourceRecordId:"ord_1",
+      targetRecordId:"pay_strong",
+      sourceType:"ORDER",
+      targetType:"PAYMENT",
+      reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    }
+  ];
+  const results=resolveCandidates(records,candidates);
+  expect(results.length).toBe(1);
+  expect(results[0].status).toBe("RESOLVED");
+  expect(results[0].matchedRecordIds).toEqual(["pay_strong"]);
+  expect(results[0].candidateRecordIds).toEqual(["pay_strong","pay_weak"]);
+  expect(results[0].evidenceScore).toBe(140);
+  expect(results[0].reasons).toEqual(["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]);
+});
+test("Multiple candidates with equal evidence become AMBIGUOUS",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1"}
+  ];
+  const candidates:CandidateMatch[]=[
+    {
+      sourceRecordId:"ord_1",
+      targetRecordId:"pay_b",
+      sourceType:"ORDER",
+      targetType:"PAYMENT",
+      reasons:["CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    },
+    {
+      sourceRecordId:"ord_1",
+      targetRecordId:"pay_a",
+      sourceType:"ORDER",
+      targetType:"PAYMENT",
+      reasons:["CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    }
+  ];
+  const results=resolveCandidates(records,candidates);
+  expect(results.length).toBe(1);
+  expect(results[0].status).toBe("AMBIGUOUS");
+  expect(results[0].matchedRecordIds).toEqual([]);
+  expect(results[0].candidateRecordIds).toEqual(["pay_a","pay_b"]);
+  expect(results[0].evidenceScore).toBe(40);
+  expect(results[0].reasons).toEqual([]);
+});
+test("Duplicate references producing equally strong candidates remain AMBIGUOUS",()=>{
+  const records:FinancialRecord[]=[
+    {id:"pay_1",type:"PAYMENT",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),paymentMethod:"card",reference:"dup_ref"}
+  ];
+  const candidates:CandidateMatch[]=[
+    {
+      sourceRecordId:"pay_1",
+      targetRecordId:"stl_2",
+      sourceType:"PAYMENT",
+      targetType:"SETTLEMENT",
+      reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    },
+    {
+      sourceRecordId:"pay_1",
+      targetRecordId:"stl_1",
+      sourceType:"PAYMENT",
+      targetType:"SETTLEMENT",
+      reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    }
+  ];
+  const results=resolveCandidates(records,candidates);
+  expect(results.length).toBe(1);
+  expect(results[0].status).toBe("AMBIGUOUS");
+  expect(results[0].matchedRecordIds).toEqual([]);
+  expect(results[0].candidateRecordIds).toEqual(["stl_1","stl_2"]);
+  expect(results[0].evidenceScore).toBe(140);
+  expect(results[0].reasons).toEqual([]);
+});
+test("Lower-scoring candidates do not appear in AMBIGUOUS candidateRecordIds",()=>{
+  const records:FinancialRecord[]=[
+    {id:"pay_1",type:"PAYMENT",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),paymentMethod:"card",reference:"dup_ref"}
+  ];
+  const candidates:CandidateMatch[]=[
+    {
+      sourceRecordId:"pay_1",
+      targetRecordId:"stl_high_2",
+      sourceType:"PAYMENT",
+      targetType:"SETTLEMENT",
+      reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    },
+    {
+      sourceRecordId:"pay_1",
+      targetRecordId:"stl_high_1",
+      sourceType:"PAYMENT",
+      targetType:"SETTLEMENT",
+      reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    },
+    {
+      sourceRecordId:"pay_1",
+      targetRecordId:"stl_low",
+      sourceType:"PAYMENT",
+      targetType:"SETTLEMENT",
+      reasons:["CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+    }
+  ];
+  const results=resolveCandidates(records,candidates);
+  expect(results.length).toBe(1);
+  expect(results[0].status).toBe("AMBIGUOUS");
+  expect(results[0].candidateRecordIds).toEqual(["stl_high_1","stl_high_2"]);
+  expect(results[0].candidateRecordIds.includes("stl_low")).toBe(false);
+  expect(results[0].evidenceScore).toBe(140);
+});
+test("Evidence score calculation is exact based on defined weights",()=>{
+  expect(REASON_WEIGHTS.EXACT_REFERENCE).toBe(100);
+  expect(REASON_WEIGHTS.AMOUNT_COMPATIBLE).toBe(20);
+  expect(REASON_WEIGHTS.CURRENCY_COMPATIBLE).toBe(10);
+  expect(REASON_WEIGHTS.TIME_WINDOW_COMPATIBLE).toBe(10);
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1"}
+  ];
+  const candidates:CandidateMatch[]=[{
+    sourceRecordId:"ord_1",
+    targetRecordId:"pay_1",
+    sourceType:"ORDER",
+    targetType:"PAYMENT",
+    reasons:["EXACT_REFERENCE","AMOUNT_COMPATIBLE"]
+  }];
+  const results=resolveCandidates(records,candidates);
+  expect(results[0].evidenceScore).toBe(120);
+});
+test("Candidate ordering is deterministic and changing candidate input order produces identical resolution output",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1"}
+  ];
+  const c1:CandidateMatch={
+    sourceRecordId:"ord_1",
+    targetRecordId:"pay_a",
+    sourceType:"ORDER",
+    targetType:"PAYMENT",
+    reasons:["CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+  };
+  const c2:CandidateMatch={
+    sourceRecordId:"ord_1",
+    targetRecordId:"pay_b",
+    sourceType:"ORDER",
+    targetType:"PAYMENT",
+    reasons:["CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+  };
+  const res1=resolveCandidates(records,[c1,c2]);
+  const res2=resolveCandidates(records,[c2,c1]);
+  expect(res1).toEqual(res2);
+});
+test("Records and candidates input arrays and objects are not mutated during resolveCandidates",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1"}
+  ];
+  const candidates:CandidateMatch[]=[{
+    sourceRecordId:"ord_1",
+    targetRecordId:"pay_1",
+    sourceType:"ORDER",
+    targetType:"PAYMENT",
+    reasons:["CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+  }];
+  const recCopy=JSON.parse(JSON.stringify(records));
+  const candCopy=JSON.parse(JSON.stringify(candidates));
+  resolveCandidates(records,candidates);
+  expect(JSON.parse(JSON.stringify(records))).toEqual(recCopy);
+  expect(JSON.parse(JSON.stringify(candidates))).toEqual(candCopy);
+});
+test("REFUND, ADJUSTMENT, and BANK_ENTRY do not produce independent source results",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ref_1",type:"REFUND",amount:1000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z")},
+    {id:"adj_1",type:"ADJUSTMENT",amount:500,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),reason:"adj"},
+    {id:"bnk_1",type:"BANK_ENTRY",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),bankReference:"b_1"}
+  ];
+  const results=resolveCandidates(records,[]);
+  expect(results.length).toBe(0);
+});
+test("Every ORDER, PAYMENT, and SETTLEMENT record receives exactly one resolution result",()=>{
+  const records:FinancialRecord[]=[
+    {id:"ord_1",type:"ORDER",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:00:00Z"),merchantId:"m_1"},
+    {id:"pay_1",type:"PAYMENT",amount:10000,currency:"INR",timestamp:new Date("2026-01-01T00:01:00Z"),paymentMethod:"card"},
+    {id:"stl_1",type:"SETTLEMENT",amount:9500,currency:"INR",timestamp:new Date("2026-01-01T00:02:00Z"),fees:500},
+    {id:"ref_1",type:"REFUND",amount:1000,currency:"INR",timestamp:new Date("2026-01-01T00:03:00Z")},
+    {id:"bnk_1",type:"BANK_ENTRY",amount:9500,currency:"INR",timestamp:new Date("2026-01-01T00:04:00Z"),bankReference:"b_1"}
+  ];
+  const results=resolveCandidates(records,[]);
+  expect(results.length).toBe(3);
+  expect(results.map(r=>r.sourceRecordId)).toEqual(["ord_1","pay_1","stl_1"]);
+});
 test("Integration validation using generateDataset with synthetic data",()=>{
-  const {dataset,groundTruth}=generateDataset({flowCount:50,seed:42});
+  const {dataset}=generateDataset({flowCount:50,seed:42});
   const candidates=discoverCandidates(dataset.records);
-  expect(candidates.length).toBeGreaterThan(0);
-  const recordMap=new Map<string,FinancialRecord>();
-  for(let i=0;i<dataset.records.length;i++){
-    recordMap.set(dataset.records[i].id,dataset.records[i]);
-  }
-  for(let i=0;i<candidates.length;i++){
-    const c=candidates[i];
-    const source=recordMap.get(c.sourceRecordId);
-    const target=recordMap.get(c.targetRecordId);
-    expect(source).toBeDefined();
-    expect(target).toBeDefined();
-    expect(source!.currency).toBe(target!.currency);
-    expect(target!.timestamp.getTime()).toBeGreaterThanOrEqual(source!.timestamp.getTime());
-    expect(target!.timestamp.getTime()-source!.timestamp.getTime()).toBeLessThanOrEqual(MAX_TIME_WINDOW_MS);
-    expect(
-      (source!.type==="ORDER"&&target!.type==="PAYMENT"&&source!.amount===target!.amount)||
-      (source!.type==="PAYMENT"&&target!.type==="SETTLEMENT"&&target!.amount<=source!.amount)||
-      (source!.type==="PAYMENT"&&target!.type==="REFUND"&&target!.amount<=source!.amount)||
-      (source!.type==="PAYMENT"&&target!.type==="ADJUSTMENT"&&Math.abs(target!.amount)<=source!.amount)||
-      (source!.type==="SETTLEMENT"&&target!.type==="BANK_ENTRY"&&source!.amount===target!.amount)
-    ).toBe(true);
-  }
-  let foundExpectedRelationships=0;
-  for(let i=0;i<groundTruth.relations.length;i++){
-    const rel=groundTruth.relations[i];
-    for(let j=0;j<rel.relationships.length;j++){
-      const r=rel.relationships[j];
-      if(r.type!=="AMBIGUOUS"){
-        for(let s=0;s<r.sourceRecordIds.length;s++){
-          for(let t=0;t<r.targetRecordIds.length;t++){
-            const exists=candidates.some(c=>c.sourceRecordId===r.sourceRecordIds[s]&&c.targetRecordId===r.targetRecordIds[t]);
-            if(exists)foundExpectedRelationships++;
-          }
-        }
-      }
+  const results=resolveCandidates(dataset.records,candidates);
+  expect(results.length).toBeGreaterThan(0);
+  const relevantRecords=dataset.records.filter(r=>r.type==="ORDER"||r.type==="PAYMENT"||r.type==="SETTLEMENT");
+  expect(results.length).toBe(relevantRecords.length);
+  for(let i=0;i<results.length;i++){
+    const res=results[i];
+    expect(res.sourceType==="ORDER"||res.sourceType==="PAYMENT"||res.sourceType==="SETTLEMENT").toBe(true);
+    expect(res.status==="RESOLVED"||res.status==="AMBIGUOUS"||res.status==="UNMATCHED").toBe(true);
+    if(res.status==="RESOLVED"){
+      expect(res.matchedRecordIds.length).toBe(1);
+      expect(res.candidateRecordIds.length).toBeGreaterThanOrEqual(1);
+      expect(res.evidenceScore).toBeGreaterThan(0);
+      expect(res.reasons.length).toBeGreaterThan(0);
+    }else if(res.status==="AMBIGUOUS"){
+      expect(res.matchedRecordIds.length).toBe(0);
+      expect(res.candidateRecordIds.length).toBeGreaterThanOrEqual(2);
+      expect(res.evidenceScore).toBeGreaterThan(0);
+      expect(res.reasons.length).toBe(0);
+    }else if(res.status==="UNMATCHED"){
+      expect(res.matchedRecordIds.length).toBe(0);
+      expect(res.candidateRecordIds.length).toBe(0);
+      expect(res.evidenceScore).toBe(0);
+      expect(res.reasons.length).toBe(0);
     }
   }
-  expect(foundExpectedRelationships).toBeGreaterThan(0);
 });

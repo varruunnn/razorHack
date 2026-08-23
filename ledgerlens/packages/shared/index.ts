@@ -72,3 +72,13 @@ export interface CandidateMatch{
   targetType:FinancialRecord["type"];
   reasons:CandidateReason[];
 }
+export type MatchStatus="RESOLVED"|"AMBIGUOUS"|"UNMATCHED";
+export interface ReconciliationResult{
+  sourceRecordId:string;
+  sourceType:FinancialRecord["type"];
+  status:MatchStatus;
+  matchedRecordIds:string[];
+  candidateRecordIds:string[];
+  evidenceScore:number;
+  reasons:CandidateReason[];
+}
