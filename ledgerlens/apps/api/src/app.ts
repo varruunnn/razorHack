@@ -13,6 +13,14 @@ export function buildApp():FastifyInstance{
   const app=Fastify({
     logger:false
   });
+  app.addHook("onRequest",async(request,reply)=>{
+    reply.header("Access-Control-Allow-Origin","*");
+    reply.header("Access-Control-Allow-Methods","GET,POST,OPTIONS");
+    reply.header("Access-Control-Allow-Headers","Content-Type,Authorization");
+    if(request.method==="OPTIONS"){
+      return reply.status(204).send();
+    }
+  });
   app.setErrorHandler((error:FastifyError,request,reply)=>{
     const err=error as{statusCode?:number;code?:string;message?:string};
     if(err.statusCode===400||err.code==="FST_ERR_CTP_INVALID_MEDIA_TYPE"||err.code==="FST_ERR_CTP_EMPTY_JSON_BODY"){
