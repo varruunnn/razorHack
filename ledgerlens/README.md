@@ -135,3 +135,15 @@ The `reconciliation-engine` provides deterministic candidate resolution (`resolv
   - `RESOLVED`: Exactly one candidate holds the strictly highest evidence score (`matchedRecordIds: [winner]`, `candidateRecordIds: rankedList`, `evidenceScore: highestScore`, `reasons: winnerReasons`).
   - `AMBIGUOUS`: Two or more candidates tie for the highest evidence score (`matchedRecordIds: []`, `candidateRecordIds: competingWinnersLexicographicallySorted`, `evidenceScore: highestScore`, `reasons: []`). Lower-scoring candidates are omitted from `candidateRecordIds`.
 - **Determinism**: Results and candidates are sorted deterministically, ensuring that input ordering differences never impact semantic output.
+
+## Reconciliation API: End-to-End Pipeline (Phase 4A)
+
+The Fastify API exposes the full ingestion and reconciliation pipeline via `POST /reconcile`.
+
+- **Pipeline Execution**:
+  1. `normalizeRecords(records)`: Normalizes raw inputs into canonical `FinancialRecord` and captures `RejectedRecord` items.
+  2. `discoverCandidates(records)`: Identifies all compatible directional pairs.
+  3. `resolveCandidates(records, candidates)`: Computes evidence scores and determines `RESOLVED`, `AMBIGUOUS`, or `UNMATCHED` status.
+- **Batch Resiliency**: Normalization rejections do not abort the reconciliation of remaining valid records in the batch.
+- **Response Contract**: Returns HTTP 200 containing execution `summary`, normalized `records`, `rejected` records, `candidates`, and final reconciliation `results`.
+

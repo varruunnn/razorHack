@@ -82,3 +82,12 @@ export interface ReconciliationResult{
   evidenceScore:number;
   reasons:CandidateReason[];
 }
+export interface ReconciliationSummary{
+  totalInputRecords:number;
+  acceptedRecords:number;
+  rejectedRecords:number;
+  resolved:number;
+  ambiguous:number;
+  unmatched:number;
+  candidateCount:number;
+}

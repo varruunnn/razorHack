@@ -1,6 +1,7 @@
 import {test,expect} from "bun:test";
 import {buildApp,ApiErrorResponse} from "./app";
 import {Settlement} from "@ledgerlens/shared";
+import {generateDataset} from "@ledgerlens/synthetic-data";
 const app=buildApp();
 test("GET /health returns 200 with status ok",async()=>{
   const res=await app.inject({
@@ -209,4 +210,264 @@ test("Existing GET /health continues working alongside POST /ingestions",async()
   expect(healthRes.statusCode).toBe(200);
   const ingestRes=await app.inject({method:"POST",url:"/ingestions",payload:{records:[]}});
   expect(ingestRes.statusCode).toBe(200);
+});
+test("POST /reconcile with empty records array returns 200 with all summary counts zero",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary).toEqual({
+    totalInputRecords:0,
+    acceptedRecords:0,
+    rejectedRecords:0,
+    resolved:0,
+    ambiguous:0,
+    unmatched:0,
+    candidateCount:0
+  });
+  expect(json.records).toEqual([]);
+  expect(json.rejected).toEqual([]);
+  expect(json.candidates).toEqual([]);
+  expect(json.results).toEqual([]);
+});
+test("POST /reconcile with one invalid record returns correct rejection and zero candidate summary",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {type:"ORDER",amount:"100.00",currency:"USD",timestamp:"2026-01-01T00:00:00Z"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary.totalInputRecords).toBe(1);
+  expect(json.summary.acceptedRecords).toBe(0);
+  expect(json.summary.rejectedRecords).toBe(1);
+  expect(json.summary.candidateCount).toBe(0);
+  expect(json.rejected.length).toBe(1);
+  expect(json.rejected[0].reason).toBe("MISSING_ID");
+});
+test("POST /reconcile resolves matching ORDER and PAYMENT with valid reference",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {id:"ord_1",type:"ORDER",amount:"100.50",currency:"USD",timestamp:"2026-01-01T00:00:00Z",reference:"ref_1"},
+        {id:"pay_1",type:"PAYMENT",amount:"100.50",currency:"USD",timestamp:"2026-01-01T00:01:00Z",reference:"ref_1"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary.acceptedRecords).toBe(2);
+  expect(json.summary.rejectedRecords).toBe(0);
+  expect(json.summary.candidateCount).toBe(1);
+  expect(json.summary.resolved).toBe(1);
+  expect(json.summary.unmatched).toBe(1);
+  const ordResult=json.results.find((r:{sourceRecordId:string})=>r.sourceRecordId==="ord_1");
+  expect(ordResult).toBeDefined();
+  expect(ordResult.status).toBe("RESOLVED");
+  expect(ordResult.matchedRecordIds).toEqual(["pay_1"]);
+  expect(ordResult.evidenceScore).toBe(140);
+  expect(ordResult.reasons).toEqual(["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]);
+});
+test("POST /reconcile does not produce candidates for matching reference with different currencies",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {id:"ord_1",type:"ORDER",amount:"100.50",currency:"USD",timestamp:"2026-01-01T00:00:00Z",reference:"ref_1"},
+        {id:"pay_1",type:"PAYMENT",amount:"100.50",currency:"INR",timestamp:"2026-01-01T00:01:00Z",reference:"ref_1"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary.candidateCount).toBe(0);
+  expect(json.candidates.length).toBe(0);
+  expect(json.summary.unmatched).toBe(2);
+});
+test("POST /reconcile returns AMBIGUOUS when multiple candidates have equal evidence",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {id:"pay_1",type:"PAYMENT",amount:"100.00",currency:"USD",timestamp:"2026-01-01T00:00:00Z",reference:"dup_ref"},
+        {id:"stl_1",type:"SETTLEMENT",amount:"100.00",currency:"USD",timestamp:"2026-01-01T01:00:00Z",reference:"dup_ref"},
+        {id:"stl_2",type:"SETTLEMENT",amount:"100.00",currency:"USD",timestamp:"2026-01-01T01:00:00Z",reference:"dup_ref"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  const payResult=json.results.find((r:{sourceRecordId:string})=>r.sourceRecordId==="pay_1");
+  expect(payResult).toBeDefined();
+  expect(payResult.status).toBe("AMBIGUOUS");
+  expect(payResult.matchedRecordIds).toEqual([]);
+  expect(payResult.candidateRecordIds).toEqual(["stl_1","stl_2"]);
+  expect(json.summary.ambiguous).toBe(1);
+});
+test("POST /reconcile assigns UNMATCHED to source records with no candidates",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {id:"ord_lone",type:"ORDER",amount:"50.00",currency:"USD",timestamp:"2026-01-01T00:00:00Z"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary.unmatched).toBe(1);
+  expect(json.results[0].status).toBe("UNMATCHED");
+  expect(json.results[0].matchedRecordIds).toEqual([]);
+});
+test("POST /reconcile continues reconciliation for valid records when input is mixed",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {type:"PAYMENT",amount:"100.00",currency:"USD",timestamp:"2026-01-01T00:00:00Z"},
+        {id:"ord_1",type:"ORDER",amount:"100.00",currency:"USD",timestamp:"2026-01-01T00:00:00Z",reference:"ref_mix"},
+        {id:"pay_1",type:"PAYMENT",amount:"100.00",currency:"USD",timestamp:"2026-01-01T00:01:00Z",reference:"ref_mix"},
+        {id:"invalid_amt",type:"ORDER",amount:"not-money",currency:"USD",timestamp:"2026-01-01T00:00:00Z"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary.totalInputRecords).toBe(4);
+  expect(json.summary.acceptedRecords).toBe(2);
+  expect(json.summary.rejectedRecords).toBe(2);
+  expect(json.summary.resolved).toBe(1);
+  expect(json.rejected.length).toBe(2);
+  expect(json.records.length).toBe(2);
+});
+test("POST /reconcile summary counts exactly match candidates and results arrays",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {id:"ord_1",type:"ORDER",amount:"100.00",currency:"USD",timestamp:"2026-01-01T00:00:00Z",reference:"r1"},
+        {id:"pay_1",type:"PAYMENT",amount:"100.00",currency:"USD",timestamp:"2026-01-01T00:01:00Z",reference:"r1"},
+        {id:"stl_1",type:"SETTLEMENT",amount:"95.00",currency:"USD",timestamp:"2026-01-01T00:02:00Z",fee:"5.00",reference:"r1"},
+        {id:"stl_2",type:"SETTLEMENT",amount:"95.00",currency:"USD",timestamp:"2026-01-01T00:02:00Z",fee:"5.00",reference:"r1"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary.candidateCount).toBe(json.candidates.length);
+  const resolvedCount=json.results.filter((r:{status:string})=>r.status==="RESOLVED").length;
+  const ambiguousCount=json.results.filter((r:{status:string})=>r.status==="AMBIGUOUS").length;
+  const unmatchedCount=json.results.filter((r:{status:string})=>r.status==="UNMATCHED").length;
+  expect(json.summary.resolved).toBe(resolvedCount);
+  expect(json.summary.ambiguous).toBe(ambiguousCount);
+  expect(json.summary.unmatched).toBe(unmatchedCount);
+  expect(json.summary.resolved+json.summary.ambiguous+json.summary.unmatched).toBe(json.results.length);
+});
+test("POST /reconcile does not mutate input request objects",async()=>{
+  const inputRecord={id:"ord_1",type:"order",amount:"100.50",currency:"usd",timestamp:1767225600};
+  const copy={...inputRecord};
+  await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[inputRecord]
+    }
+  });
+  expect(inputRecord).toEqual(copy);
+});
+test("POST /reconcile response does not expose hidden ground truth",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:[
+        {id:"stl_1",type:"SETTLEMENT",amount:100,currency:"USD",timestamp:"2026-01-01T00:00:00Z",paymentIds:["p1"],matchedRecordIds:["p2"],groundTruth:"leak"}
+      ]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  const stl=json.records[0];
+  expect(stl.paymentIds).toBeUndefined();
+  expect(stl.matchedRecordIds).toBeUndefined();
+  expect(stl.groundTruth).toBeUndefined();
+});
+test("POST /reconcile returns 400 for invalid body, missing records, or non-array records",async()=>{
+  const res1=await app.inject({method:"POST",url:"/reconcile",payload:"invalid string"});
+  expect(res1.statusCode).toBe(400);
+  const res2=await app.inject({method:"POST",url:"/reconcile",payload:{}});
+  expect(res2.statusCode).toBe(400);
+  const res3=await app.inject({method:"POST",url:"/reconcile",payload:{records:"not-array"}});
+  expect(res3.statusCode).toBe(400);
+  const res4=await app.inject({method:"POST",url:"/reconcile",payload:{records:[null]}});
+  expect(res4.statusCode).toBe(400);
+});
+test("POST /reconcile returns 413 when records exceed 1000",async()=>{
+  const large=[];
+  for(let i=0;i<1001;i++){
+    large.push({id:`p_${i}`,type:"PAYMENT",amount:10,currency:"USD",timestamp:"2026-01-01T00:00:00Z"});
+  }
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:large
+    }
+  });
+  expect(res.statusCode).toBe(413);
+  const json=JSON.parse(res.body) as ApiErrorResponse;
+  expect(json.error.code).toBe("BATCH_TOO_LARGE");
+});
+test("POST /reconcile integration validation using generateDataset with synthetic data",async()=>{
+  const {dataset}=generateDataset({flowCount:30,seed:12345});
+  const rawRecords=dataset.records.map(r=>({
+    id:r.id,
+    type:r.type,
+    amount:r.amount,
+    amount_unit:"MINOR",
+    currency:r.currency,
+    timestamp:r.timestamp.toISOString(),
+    reference:r.reference,
+    merchantId:(r as {merchantId?:string}).merchantId,
+    paymentMethod:(r as {paymentMethod?:string}).paymentMethod,
+    bankReference:(r as {bankReference?:string}).bankReference,
+    fees:(r as {fees?:number}).fees,
+    reason:(r as {reason?:string}).reason
+  }));
+  const res=await app.inject({
+    method:"POST",
+    url:"/reconcile",
+    payload:{
+      records:rawRecords
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.summary.acceptedRecords).toBe(dataset.records.length);
+  expect(json.summary.rejectedRecords).toBe(0);
+  expect(json.summary.candidateCount).toBe(json.candidates.length);
+  expect(json.summary.resolved+json.summary.ambiguous+json.summary.unmatched).toBe(json.results.length);
+  for(let i=0;i<json.records.length;i++){
+    const r=json.records[i];
+    expect(r.paymentIds).toBeUndefined();
+    expect(r.matchedRecordIds).toBeUndefined();
+    expect(r.flowId).toBeUndefined();
+    expect(r.scenario).toBeUndefined();
+  }
 });
