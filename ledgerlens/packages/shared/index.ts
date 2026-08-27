@@ -92,12 +92,16 @@ export interface ReconciliationSummary{
   candidateCount:number;
 }
 export type RiskLevel="LOW"|"MEDIUM"|"HIGH";
+export type AttentionLevel="REVIEW_REQUIRED"|"MONITOR"|"NO_ACTION";
 export interface InvestigationReport{
   summary:string;
   whyThisStatus:string;
+  explanation:string;
   keyEvidence:string[];
   riskLevel:RiskLevel;
+  attentionLevel:AttentionLevel;
   recommendedAction:string;
+  recommendedActions:string[];
   questionsToInvestigate:string[];
   provider:"gemini"|"openai"|"deterministic-fallback";
 }

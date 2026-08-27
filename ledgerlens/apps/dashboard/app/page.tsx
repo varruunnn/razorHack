@@ -833,53 +833,78 @@ export default function DashboardPage(){
                     <span className="font-mono font-bold text-indigo-400">{selectedResult.evidenceScore} / 140</span>
                   </div>
                 </div>
-                <div className="p-4 rounded-xl bg-indigo-950/30 border border-indigo-800/40 space-y-3">
-                  <div className="flex items-center justify-between">
+                <div className="p-4 rounded-xl bg-slate-950/80 border border-indigo-900/50 space-y-4 shadow-sm">
+                  <div className="flex items-center justify-between pb-2.5 border-b border-slate-800/80">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="h-4 w-4 text-indigo-400"/>
-                      <span className="text-xs font-bold text-white">AI Case Investigation</span>
+                      <ShieldAlert className="h-4 w-4 text-indigo-400"/>
+                      <span className="text-xs font-bold uppercase tracking-wider text-white">Analyst Action</span>
                     </div>
-                    {currentAiReport&&(
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full border ${
-                          currentAiReport.riskLevel==="LOW"
-                            ? "bg-emerald-950 text-emerald-300 border-emerald-800"
-                            : currentAiReport.riskLevel==="MEDIUM"
-                            ? "bg-amber-950 text-amber-300 border-amber-800"
-                            : "bg-rose-950 text-rose-300 border-rose-800"
-                        }`}>
-                          {currentAiReport.riskLevel} RISK
+                    <div>
+                      {currentAiReport?.provider==="gemini"?(
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-indigo-950/80 text-indigo-300 border border-indigo-700/60 shadow-sm">
+                          <Sparkles className="h-3 w-3 text-indigo-400"/>
+                          ✨ Gemini AI Analysis
                         </span>
-                        <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.2 rounded bg-slate-900 border border-slate-800">
-                          {currentAiReport.provider.toUpperCase()}
+                      ):(
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-900 text-slate-400 border border-slate-800">
+                          ⚙ Deterministic Fallback
                         </span>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                   {currentAiReport?(
-                    <div className="space-y-3 text-xs">
-                      <p className="text-slate-300 leading-relaxed bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
-                        {currentAiReport.summary}
-                      </p>
-                      <div className="space-y-1">
-                        <span className="text-[11px] font-semibold text-slate-400">Why This Verdict:</span>
-                        <p className="text-slate-300 leading-relaxed">{currentAiReport.whyThisStatus}</p>
+                    <div className="space-y-3.5 text-xs">
+                      <div className="flex items-center gap-4 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/70">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400 font-semibold text-[11px]">Risk:</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                            currentAiReport.riskLevel==="HIGH"
+                              ? "bg-rose-950 text-rose-300 border-rose-800"
+                              : currentAiReport.riskLevel==="MEDIUM"
+                              ? "bg-amber-950 text-amber-300 border-amber-800"
+                              : "bg-emerald-950 text-emerald-300 border-emerald-800"
+                          }`}>
+                            [ {currentAiReport.riskLevel} ]
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400 font-semibold text-[11px]">Attention:</span>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${
+                            currentAiReport.attentionLevel==="REVIEW_REQUIRED"
+                              ? "bg-rose-950/90 text-rose-300 border-rose-800"
+                              : currentAiReport.attentionLevel==="MONITOR"
+                              ? "bg-amber-950/90 text-amber-300 border-amber-800"
+                              : "bg-emerald-950/90 text-emerald-300 border-emerald-800"
+                          }`}>
+                            [ {currentAiReport.attentionLevel.replace("_"," ")} ]
+                          </span>
+                        </div>
                       </div>
-                      <div className="space-y-1">
-                        <span className="text-[11px] font-semibold text-slate-400">Recommended Action:</span>
-                        <p className="text-indigo-200 font-medium leading-relaxed bg-indigo-950/50 p-2 rounded border border-indigo-800/50">
-                          {currentAiReport.recommendedAction}
+                      <div className="space-y-1.5 bg-slate-900/50 p-3 rounded-lg border border-slate-800/80">
+                        <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block">Why this happened</span>
+                        <p className="text-slate-300 leading-relaxed text-[12px]">
+                          {currentAiReport.explanation||currentAiReport.whyThisStatus}
                         </p>
                       </div>
-                      {currentAiReport.questionsToInvestigate.length>0&&(
-                        <div className="space-y-1.5">
-                          <span className="text-[11px] font-semibold text-slate-400">Questions to Investigate:</span>
+                      <div className="space-y-2 bg-slate-900/50 p-3 rounded-lg border border-slate-800/80">
+                        <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block">Recommended next steps</span>
+                        <ol className="space-y-1.5 text-slate-300 list-decimal list-inside pl-0.5">
+                          {(currentAiReport.recommendedActions?.length>0?currentAiReport.recommendedActions:[currentAiReport.recommendedAction]).map((act,idx)=>(
+                            <li key={idx} className="leading-relaxed text-[11px]">
+                              <span className="text-slate-200">{act}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+                      {currentAiReport.questionsToInvestigate?.length>0&&(
+                        <div className="space-y-1 pt-0.5">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Questions to Investigate</span>
                           <div className="space-y-1">
                             {currentAiReport.questionsToInvestigate.map((q,idx)=>(
                               <button
                                 key={idx}
                                 onClick={()=>handleAskQuestion(q)}
-                                className="w-full text-left text-[11px] text-slate-400 hover:text-indigo-300 hover:bg-slate-900/80 p-1.5 rounded transition border border-transparent hover:border-slate-800 flex items-center justify-between group"
+                                className="w-full text-left text-[11px] text-slate-400 hover:text-indigo-300 hover:bg-slate-900 p-1.5 rounded transition border border-transparent hover:border-slate-800 flex items-center justify-between group"
                               >
                                 <span>• {q}</span>
                                 <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition text-indigo-400"/>
@@ -897,7 +922,7 @@ export default function DashboardPage(){
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition"
                       >
                         <Bot className="h-3.5 w-3.5"/>
-                        <span>{isLoadingAiReport?"Analyzing Case with AI...":"Generate AI Case Report"}</span>
+                        <span>{isLoadingAiReport?"Generating Action Plan...":"Generate Analyst Action"}</span>
                       </button>
                     </div>
                   )}

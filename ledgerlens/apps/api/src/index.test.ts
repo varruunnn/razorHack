@@ -519,10 +519,14 @@ test("POST /investigate with valid payload returns structured report",async()=>{
   expect(res.statusCode).toBe(200);
   const json=JSON.parse(res.body);
   expect(json.riskLevel).toBe("LOW");
+  expect(json.attentionLevel).toBeDefined();
   expect(json.summary).toBeDefined();
   expect(json.whyThisStatus).toBeDefined();
+  expect(json.explanation).toBeDefined();
   expect(json.keyEvidence.length).toBeGreaterThan(0);
   expect(json.recommendedAction).toBeDefined();
+  expect(Array.isArray(json.recommendedActions)).toBe(true);
+  expect(json.recommendedActions.length).toBeGreaterThan(0);
   expect(json.questionsToInvestigate.length).toBeGreaterThan(0);
   expect(json.provider).toBeDefined();
 });

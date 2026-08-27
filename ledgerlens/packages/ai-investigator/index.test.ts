@@ -47,6 +47,15 @@ describe("AI Investigator Package",()=>{
     evidenceScore:140,
     reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
   };
+  const resolvedPartialResult:ReconciliationResult={
+    sourceRecordId:"ord_100",
+    sourceType:"ORDER",
+    status:"RESOLVED",
+    matchedRecordIds:["pay_100"],
+    candidateRecordIds:["pay_100"],
+    evidenceScore:40,
+    reasons:["AMOUNT_COMPATIBLE","CURRENCY_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+  };
   const ambiguousResult:ReconciliationResult={
     sourceRecordId:"ord_100",
     sourceType:"ORDER",
@@ -70,21 +79,34 @@ describe("AI Investigator Package",()=>{
     expect(info.provider).toBe("deterministic-fallback");
     expect(info.isAiConfigured).toBe(false);
   });
-  it("generates structured investigation report for RESOLVED status",async()=>{
+  it("generates structured investigation report for RESOLVED status with NO_ACTION",async()=>{
     const report=await generateInvestigationReport({
       record:mockOrder,
       result:resolvedResult,
       candidates:[mockCandidate]
     },{preferredProvider:"deterministic-fallback"});
     expect(report.riskLevel).toBe("LOW");
+    expect(report.attentionLevel).toBe("NO_ACTION");
     expect(report.summary).toContain("ord_100");
     expect(report.summary).toContain("pay_100");
+    expect(report.explanation).toContain("140/140");
     expect(report.keyEvidence.length).toBeGreaterThan(0);
-    expect(report.recommendedAction.length).toBeGreaterThan(0);
+    expect(report.recommendedActions.length).toBeGreaterThanOrEqual(1);
+    expect(report.recommendedAction).toBe(report.recommendedActions[0]);
     expect(report.questionsToInvestigate.length).toBeGreaterThan(0);
     expect(report.provider).toBe("deterministic-fallback");
   });
-  it("generates structured investigation report for AMBIGUOUS status with HIGH risk",async()=>{
+  it("generates structured investigation report for RESOLVED with partial score as MONITOR",async()=>{
+    const report=await generateInvestigationReport({
+      record:mockOrder,
+      result:resolvedPartialResult,
+      candidates:[mockCandidate]
+    },{preferredProvider:"deterministic-fallback"});
+    expect(report.riskLevel).toBe("LOW");
+    expect(report.attentionLevel).toBe("MONITOR");
+    expect(report.recommendedActions.length).toBeGreaterThan(0);
+  });
+  it("generates structured investigation report for AMBIGUOUS status with HIGH risk and REVIEW_REQUIRED",async()=>{
     const report=await generateInvestigationReport({
       record:mockOrder,
       result:ambiguousResult,
@@ -94,20 +116,25 @@ describe("AI Investigator Package",()=>{
       ]
     },{preferredProvider:"deterministic-fallback"});
     expect(report.riskLevel).toBe("HIGH");
+    expect(report.attentionLevel).toBe("REVIEW_REQUIRED");
     expect(report.summary).toContain("competing candidates");
     expect(report.whyThisStatus).toContain("tied for the highest evidence score");
-    expect(report.recommendedAction).toContain("Hold");
+    expect(report.explanation).toContain("tied with the highest evidence score");
+    expect(report.recommendedActions.length).toBeGreaterThanOrEqual(2);
+    expect(report.recommendedActions[0]).toContain("Do not automatically reconcile");
     expect(report.questionsToInvestigate.length).toBeGreaterThan(0);
   });
-  it("generates structured investigation report for UNMATCHED status",async()=>{
+  it("generates structured investigation report for UNMATCHED status with REVIEW_REQUIRED",async()=>{
     const report=await generateInvestigationReport({
       record:mockOrder,
       result:unmatchedResult,
       candidates:[]
     },{preferredProvider:"deterministic-fallback"});
+    expect(report.attentionLevel).toBe("REVIEW_REQUIRED");
     expect(report.summary).toContain("could not be matched");
     expect(report.whyThisStatus).toContain("Zero candidates");
-    expect(report.recommendedAction).toContain("exception review");
+    expect(report.explanation).toContain("No eligible candidate");
+    expect(report.recommendedActions.length).toBeGreaterThanOrEqual(2);
   });
   it("generates executive summary with exact counts",async()=>{
     const summaryData:ReconciliationSummary={
@@ -147,6 +174,20 @@ describe("AI Investigator Package",()=>{
     },{preferredProvider:"deterministic-fallback"});
     expect(actionAnswer.answer).toContain("action");
   });
+  it("guarantees AI layer cannot alter deterministic reconciliation result values",async()=>{
+    const originalStatus=resolvedResult.status;
+    const originalScore=resolvedResult.evidenceScore;
+    const originalMatches=[...resolvedResult.matchedRecordIds];
+    const report=await generateInvestigationReport({
+      record:mockOrder,
+      result:resolvedResult,
+      candidates:[mockCandidate]
+    },{preferredProvider:"deterministic-fallback"});
+    expect(resolvedResult.status).toBe(originalStatus);
+    expect(resolvedResult.evidenceScore).toBe(originalScore);
+    expect(resolvedResult.matchedRecordIds).toEqual(originalMatches);
+    expect(report.riskLevel).toBe("LOW");
+  });
   it("falls back gracefully when AI key is invalid or network fails",async()=>{
     const report=await generateInvestigationReport({
       record:mockOrder,
@@ -158,6 +199,8 @@ describe("AI Investigator Package",()=>{
       timeoutMs:500
     });
     expect(report.summary.length).toBeGreaterThan(0);
+    expect(report.attentionLevel).toBe("NO_ACTION");
+    expect(report.recommendedActions.length).toBeGreaterThan(0);
     expect(report.provider).toBe("deterministic-fallback");
   });
 });
