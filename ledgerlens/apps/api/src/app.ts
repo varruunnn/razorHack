@@ -1,7 +1,18 @@
 import Fastify,{FastifyInstance,FastifyError} from "fastify";
 import {normalizeRecords,RawRecord} from "@ledgerlens/ingestion";
 import {discoverCandidates,resolveCandidates} from "@ledgerlens/reconciliation-engine";
-import {ReconciliationSummary} from "@ledgerlens/shared";
+import {
+  generateInvestigationReport,
+  generateExecutiveSummary,
+  askInvestigationQuestion,
+  getAiProviderInfo
+} from "@ledgerlens/ai-investigator";
+import {
+  ReconciliationSummary,
+  FinancialRecord,
+  ReconciliationResult,
+  CandidateMatch
+} from "@ledgerlens/shared";
 export const MAX_BATCH_SIZE=1000;
 export interface ApiErrorResponse{
   error:{
@@ -39,6 +50,9 @@ export function buildApp():FastifyInstance{
       status:"ok",
       service:"ledgerlens-api"
     };
+  });
+  app.get("/investigate/info",async(request,reply)=>{
+    return reply.status(200).send(getAiProviderInfo());
   });
   app.post("/ingestions",async(request,reply)=>{
     const body=request.body;
@@ -112,6 +126,63 @@ export function buildApp():FastifyInstance{
       candidates,
       results
     });
+  });
+  app.post("/investigate",async(request,reply)=>{
+    const body=request.body;
+    if(!body||typeof body!=="object"||Array.isArray(body)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Request body must be an object"}});
+    }
+    const bodyObj=body as Record<string,unknown>;
+    if(!bodyObj.record||typeof bodyObj.record!=="object"||Array.isArray(bodyObj.record)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Field 'record' must be an object"}});
+    }
+    if(!bodyObj.result||typeof bodyObj.result!=="object"||Array.isArray(bodyObj.result)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Field 'result' must be an object"}});
+    }
+    if(!("candidates" in bodyObj)||!Array.isArray(bodyObj.candidates)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Field 'candidates' must be an array"}});
+    }
+    const report=await generateInvestigationReport({
+      record:bodyObj.record as FinancialRecord,
+      result:bodyObj.result as ReconciliationResult,
+      candidates:bodyObj.candidates as CandidateMatch[]
+    });
+    return reply.status(200).send(report);
+  });
+  app.post("/investigate/summary",async(request,reply)=>{
+    const body=request.body;
+    if(!body||typeof body!=="object"||Array.isArray(body)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Request body must be an object"}});
+    }
+    const bodyObj=body as Record<string,unknown>;
+    if(!bodyObj.summary||typeof bodyObj.summary!=="object"||Array.isArray(bodyObj.summary)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Field 'summary' must be an object"}});
+    }
+    const report=await generateExecutiveSummary(bodyObj.summary as ReconciliationSummary);
+    return reply.status(200).send(report);
+  });
+  app.post("/investigate/ask",async(request,reply)=>{
+    const body=request.body;
+    if(!body||typeof body!=="object"||Array.isArray(body)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Request body must be an object"}});
+    }
+    const bodyObj=body as Record<string,unknown>;
+    if(typeof bodyObj.question!=="string"||bodyObj.question.trim().length===0){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Field 'question' must be a non-empty string"}});
+    }
+    if(!bodyObj.context||typeof bodyObj.context!=="object"||Array.isArray(bodyObj.context)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Field 'context' must be an object"}});
+    }
+    const contextObj=bodyObj.context as Record<string,unknown>;
+    if(!contextObj.record||!contextObj.result||!Array.isArray(contextObj.candidates)){
+      return reply.status(400).send({error:{code:"INVALID_REQUEST",message:"Context must contain record, result, and candidates"}});
+    }
+    const answer=await askInvestigationQuestion(bodyObj.question.trim(),{
+      record:contextObj.record as FinancialRecord,
+      result:contextObj.result as ReconciliationResult,
+      candidates:contextObj.candidates as CandidateMatch[]
+    });
+    return reply.status(200).send(answer);
   });
   return app;
 }

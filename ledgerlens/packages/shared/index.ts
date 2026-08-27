@@ -91,3 +91,29 @@ export interface ReconciliationSummary{
   unmatched:number;
   candidateCount:number;
 }
+export type RiskLevel="LOW"|"MEDIUM"|"HIGH";
+export interface InvestigationReport{
+  summary:string;
+  whyThisStatus:string;
+  keyEvidence:string[];
+  riskLevel:RiskLevel;
+  recommendedAction:string;
+  questionsToInvestigate:string[];
+  provider:"gemini"|"openai"|"deterministic-fallback";
+}
+export interface ExecutiveSummaryReport{
+  overview:string;
+  keyFindings:string[];
+  attentionRequired:string[];
+  recommendedNextSteps:string[];
+  provider:"gemini"|"openai"|"deterministic-fallback";
+}
+export interface AskInvestigationResponse{
+  answer:string;
+  provider:"gemini"|"openai"|"deterministic-fallback";
+}
+export interface InvestigationContext{
+  record:FinancialRecord;
+  result:ReconciliationResult;
+  candidates:CandidateMatch[];
+}

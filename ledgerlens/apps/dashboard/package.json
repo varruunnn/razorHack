@@ -12,6 +12,7 @@
   "dependencies": {
     "@ledgerlens/shared": "workspace:*",
     "@ledgerlens/synthetic-data": "workspace:*",
+    "@ledgerlens/ai-investigator": "workspace:*",
     "lucide-react": "^1.34.0",
     "next": "latest",
     "react": "latest",

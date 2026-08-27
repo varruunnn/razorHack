@@ -1,5 +1,5 @@
 "use client";
-import React,{useState} from "react";
+import React,{useState,useEffect} from "react";
 import {
   ShieldCheck,
   CheckCircle2,
@@ -25,7 +25,14 @@ import {
   SlidersHorizontal,
   ExternalLink,
   Target,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Bot,
+  Send,
+  MessageSquare,
+  Zap,
+  ListChecks,
+  AlertOctagon,
+  ShieldAlert
 } from "lucide-react";
 import {generateDataset} from "@ledgerlens/synthetic-data";
 import {
@@ -33,6 +40,9 @@ import {
   CandidateMatch,
   ReconciliationResult,
   ReconciliationSummary,
+  InvestigationReport,
+  ExecutiveSummaryReport,
+  AskInvestigationResponse,
   Order,
   Payment,
   Settlement,
@@ -67,6 +77,12 @@ interface ReconcileApiResponse{
   candidates:CandidateMatch[];
   results:ReconciliationResult[];
 }
+interface ChatMessage{
+  id:string;
+  question:string;
+  answer:string;
+  provider:string;
+}
 function formatMoney(amountMinor:number,currency:string="USD"):string{
   const major=(amountMinor/100).toFixed(2);
   return `${currency} $${Number(major).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2})}`;
@@ -80,6 +96,24 @@ export default function DashboardPage(){
   const [searchQuery,setSearchQuery]=useState<string>("");
   const [isReconciling,setIsReconciling]=useState<boolean>(false);
   const [notification,setNotification]=useState<{type:"success"|"error"|"info";message:string}|null>(null);
+  const [aiProviderInfo,setAiProviderInfo]=useState<{provider:string;isAiConfigured:boolean}>({provider:"deterministic-fallback",isAiConfigured:false});
+  const [execSummary,setExecSummary]=useState<ExecutiveSummaryReport|null>(null);
+  const [isGeneratingExecSummary,setIsGeneratingExecSummary]=useState<boolean>(false);
+  const [aiReports,setAiReports]=useState<Record<string,InvestigationReport>>({});
+  const [isLoadingAiReport,setIsLoadingAiReport]=useState<boolean>(false);
+  const [chatMessages,setChatMessages]=useState<Record<string,ChatMessage[]>>({});
+  const [currentQuestion,setCurrentQuestion]=useState<string>("");
+  const [isAskingQuestion,setIsAskingQuestion]=useState<boolean>(false);
+  useEffect(()=>{
+    fetch(`${API_BASE_URL}/investigate/info`)
+      .then(r=>r.json())
+      .then(d=>{
+        if(d&&typeof d.provider==="string"){
+          setAiProviderInfo(d);
+        }
+      })
+      .catch(()=>{});
+  },[]);
   const handleLoadDemoData=()=>{
     try{
       const {dataset}=generateDataset({flowCount:25,seed:Date.now()});
@@ -120,6 +154,9 @@ export default function DashboardPage(){
       setReconcileResponse(null);
       setSelectedSourceId("");
       setSelectedRejectedIndex(null);
+      setExecSummary(null);
+      setAiReports({});
+      setChatMessages({});
       setNotification({
         type:"info",
         message:`Loaded ${raw.length} synthetic financial records (${raw.length-2} canonical flows + 2 raw ingestion error test cases). Click "Run Reconciliation" to evaluate candidate matches.`
@@ -141,6 +178,9 @@ export default function DashboardPage(){
     }
     setIsReconciling(true);
     setNotification(null);
+    setExecSummary(null);
+    setAiReports({});
+    setChatMessages({});
     try{
       const res=await fetch(`${API_BASE_URL}/reconcile`,{
         method:"POST",
@@ -156,9 +196,12 @@ export default function DashboardPage(){
       const data:ReconcileApiResponse=await res.json();
       setReconcileResponse(data);
       if(data.results.length>0){
-        setSelectedSourceId(data.results[0].sourceRecordId);
+        const firstId=data.results[0].sourceRecordId;
+        setSelectedSourceId(firstId);
         setSelectedRejectedIndex(null);
+        fetchAiReportForRecord(firstId,data);
       }
+      fetchExecutiveAiSummary(data.summary);
       setNotification({
         type:"success",
         message:`Reconciliation complete: ${data.summary.resolved} resolved, ${data.summary.ambiguous} ambiguous, ${data.summary.unmatched} unmatched (${data.summary.candidateCount} candidate pairs evaluated deterministically).`
@@ -170,6 +213,93 @@ export default function DashboardPage(){
       });
     }finally{
       setIsReconciling(false);
+    }
+  };
+  const fetchExecutiveAiSummary=async(summaryData:ReconciliationSummary)=>{
+    setIsGeneratingExecSummary(true);
+    try{
+      const res=await fetch(`${API_BASE_URL}/investigate/summary`,{
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json"
+        },
+        body:JSON.stringify({summary:summaryData})
+      });
+      if(res.ok){
+        const report:ExecutiveSummaryReport=await res.json();
+        setExecSummary(report);
+      }
+    }catch(err){
+    }finally{
+      setIsGeneratingExecSummary(false);
+    }
+  };
+  const fetchAiReportForRecord=async(sourceId:string,dataContext?:ReconcileApiResponse)=>{
+    const currentData=dataContext||reconcileResponse;
+    if(!currentData)return;
+    const result=currentData.results.find(r=>r.sourceRecordId===sourceId);
+    const record=currentData.records.find(r=>r.id===sourceId);
+    if(!result||!record)return;
+    const candidates=currentData.candidates.filter(c=>c.sourceRecordId===sourceId);
+    setIsLoadingAiReport(true);
+    try{
+      const res=await fetch(`${API_BASE_URL}/investigate`,{
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+          record,
+          result,
+          candidates
+        })
+      });
+      if(res.ok){
+        const report:InvestigationReport=await res.json();
+        setAiReports(prev=>({...prev,[sourceId]:report}));
+      }
+    }catch(err){
+    }finally{
+      setIsLoadingAiReport(false);
+    }
+  };
+  const handleAskQuestion=async(customPrompt?:string)=>{
+    const questionText=customPrompt||currentQuestion;
+    if(!questionText.trim()||!selectedResult||!selectedSourceRecord||!reconcileResponse)return;
+    setIsAskingQuestion(true);
+    const candidates=reconcileResponse.candidates.filter(c=>c.sourceRecordId===selectedResult.sourceRecordId);
+    try{
+      const res=await fetch(`${API_BASE_URL}/investigate/ask`,{
+        method:"POST",
+        headers:{
+          "Content-Type":"application/json"
+        },
+        body:JSON.stringify({
+          question:questionText.trim(),
+          context:{
+            record:selectedSourceRecord,
+            result:selectedResult,
+            candidates
+          }
+        })
+      });
+      if(res.ok){
+        const data:AskInvestigationResponse=await res.json();
+        const newMsg:ChatMessage={
+          id:String(Date.now()),
+          question:questionText.trim(),
+          answer:data.answer,
+          provider:data.provider
+        };
+        setChatMessages(prev=>({
+          ...prev,
+          [selectedResult.sourceRecordId]:[...(prev[selectedResult.sourceRecordId]||[]),newMsg]
+        }));
+        if(!customPrompt)setCurrentQuestion("");
+      }
+    }catch(err){
+    }finally{
+      setIsAskingQuestion(false);
     }
   };
   const summary=reconcileResponse?.summary||{
@@ -216,6 +346,8 @@ export default function DashboardPage(){
   const resolvedPct=evaluatedCount>0?((summary.resolved/evaluatedCount)*100).toFixed(1):"0.0";
   const ambiguousPct=evaluatedCount>0?((summary.ambiguous/evaluatedCount)*100).toFixed(1):"0.0";
   const unmatchedPct=evaluatedCount>0?((summary.unmatched/evaluatedCount)*100).toFixed(1):"0.0";
+  const currentAiReport=selectedResult?aiReports[selectedResult.sourceRecordId]:null;
+  const currentChats=selectedResult?chatMessages[selectedResult.sourceRecordId]||[]:[];
   return(
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       <header className="border-b border-slate-800/80 bg-slate-900/70 backdrop-blur sticky top-0 z-40 px-6 py-3 flex items-center justify-between">
@@ -228,13 +360,13 @@ export default function DashboardPage(){
               <span className="font-bold text-lg text-white tracking-tight">LedgerLens</span>
               <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-full bg-indigo-950/90 text-indigo-300 border border-indigo-700/50">Deterministic Rules Engine</span>
             </div>
-            <p className="text-xs text-slate-400">Financial Reconciliation & Exception Investigation Platform</p>
+            <p className="text-xs text-slate-400">Financial Reconciliation & Exception Investigation Copilot</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-400 text-xs">
-            <Cpu className="h-3.5 w-3.5 text-indigo-400"/>
-            <span>Deterministic Scoring • No LLM Hallucination</span>
+          <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-950/40 border border-indigo-800/50 text-indigo-300 text-xs font-medium">
+            <Bot className="h-3.5 w-3.5 text-indigo-400"/>
+            <span>AI Copilot: {aiProviderInfo.isAiConfigured?aiProviderInfo.provider.toUpperCase():"Deterministic Analysis"}</span>
           </div>
           <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-950/60 border border-emerald-800/60 text-emerald-400 text-xs font-medium">
             <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse"/>
@@ -251,7 +383,7 @@ export default function DashboardPage(){
               <span className="text-xs px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 border border-slate-700 font-mono">Fastify Pipeline</span>
             </div>
             <p className="text-sm text-slate-400 max-w-2xl leading-relaxed">
-              LedgerLens evaluates financial records using deterministic rules and multi-evidence scoring across orders, payments, settlements, and bank entries.
+              LedgerLens evaluates financial records using deterministic multi-evidence scoring, paired with an AI investigation copilot for exception analysis and audit summaries.
             </p>
           </div>
           <div className="flex items-center gap-3 shrink-0 z-10">
@@ -345,6 +477,89 @@ export default function DashboardPage(){
             <div className="text-[11px] text-slate-500 font-medium">Failed ingestion checks</div>
           </div>
         </div>
+        {reconcileResponse&&(
+          <div className="p-5 rounded-2xl bg-gradient-to-r from-indigo-950/40 via-slate-900/70 to-slate-900/40 border border-indigo-800/40 space-y-4 shadow-sm relative overflow-hidden">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="h-8 w-8 rounded-lg bg-indigo-600/30 border border-indigo-500/40 flex items-center justify-center">
+                  <Sparkles className="h-4 w-4 text-indigo-300"/>
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-bold text-white">AI Executive Reconciliation Brief</h2>
+                    <span className="text-[10px] px-2 py-0.2 rounded-full bg-indigo-900/60 text-indigo-300 border border-indigo-700/50 font-mono">
+                      {execSummary?.provider.toUpperCase()||"DETERMINISTIC"}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">Automated exception analysis & audit findings</p>
+                </div>
+              </div>
+              <button
+                onClick={()=>fetchExecutiveAiSummary(summary)}
+                disabled={isGeneratingExecSummary}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 transition"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isGeneratingExecSummary?"animate-spin":""}`}/>
+                <span>{isGeneratingExecSummary?"Analyzing...":"Regenerate"}</span>
+              </button>
+            </div>
+            {execSummary?(
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs pt-1">
+                <div className="space-y-1.5 md:col-span-3 bg-slate-950/60 p-3 rounded-xl border border-slate-800/80">
+                  <span className="font-semibold text-slate-300 uppercase tracking-wider text-[10px]">Batch Overview</span>
+                  <p className="text-slate-300 leading-relaxed">{execSummary.overview}</p>
+                </div>
+                <div className="space-y-2 bg-slate-950/40 p-3 rounded-xl border border-slate-800/60">
+                  <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                    <ListChecks className="h-4 w-4"/>
+                    <span>Key Findings</span>
+                  </div>
+                  <ul className="space-y-1.5 text-slate-300">
+                    {execSummary.keyFindings.map((f,i)=>(
+                      <li key={i} className="flex items-start gap-1.5">
+                        <span className="text-emerald-500 font-bold">•</span>
+                        <span>{f}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="space-y-2 bg-slate-950/40 p-3 rounded-xl border border-slate-800/60">
+                  <div className="flex items-center gap-1.5 text-amber-400 font-semibold">
+                    <AlertTriangle className="h-4 w-4"/>
+                    <span>Attention Required</span>
+                  </div>
+                  <ul className="space-y-1.5 text-slate-300">
+                    {execSummary.attentionRequired.map((a,i)=>(
+                      <li key={i} className="flex items-start gap-1.5">
+                        <span className="text-amber-500 font-bold">•</span>
+                        <span>{a}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="space-y-2 bg-slate-950/40 p-3 rounded-xl border border-slate-800/60">
+                  <div className="flex items-center gap-1.5 text-indigo-400 font-semibold">
+                    <ArrowRight className="h-4 w-4"/>
+                    <span>Recommended Next Steps</span>
+                  </div>
+                  <ul className="space-y-1.5 text-slate-300">
+                    {execSummary.recommendedNextSteps.map((s,i)=>(
+                      <li key={i} className="flex items-start gap-1.5">
+                        <span className="text-indigo-400 font-bold">→</span>
+                        <span>{s}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ):(
+              <div className="py-4 text-center text-xs text-slate-400 flex items-center justify-center gap-2">
+                <Sparkles className="h-4 w-4 text-indigo-400 animate-pulse"/>
+                <span>{isGeneratingExecSummary?"Generating AI Executive Summary...":"Click Regenerate to analyze batch."}</span>
+              </div>
+            )}
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <div className="lg:col-span-7 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-900/60 p-3.5 rounded-xl border border-slate-800">
@@ -480,6 +695,9 @@ export default function DashboardPage(){
                               onClick={()=>{
                                 setSelectedSourceId(item.sourceRecordId);
                                 setSelectedRejectedIndex(null);
+                                if(!aiReports[item.sourceRecordId]){
+                                  fetchAiReportForRecord(item.sourceRecordId);
+                                }
                               }}
                               className={`cursor-pointer transition ${
                                 isSelected
@@ -561,7 +779,7 @@ export default function DashboardPage(){
                 </div>
               </div>
             ):selectedResult?(
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-5 space-y-5 shadow-sm sticky top-20">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-5 space-y-5 shadow-sm sticky top-20">
                 <div className="flex items-center justify-between pb-3 border-b border-slate-800">
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-2">
@@ -615,48 +833,129 @@ export default function DashboardPage(){
                     <span className="font-mono font-bold text-indigo-400">{selectedResult.evidenceScore} / 140</span>
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-xs font-semibold text-slate-300">
-                    <span>Reconciliation Verdict</span>
-                    <span className="text-[11px] text-slate-500">
-                      {selectedResult.candidateRecordIds.length} candidate{selectedResult.candidateRecordIds.length!==1?"s":""}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-400 bg-slate-950/40 p-3 rounded-lg border border-slate-800/60 leading-relaxed">
-                    {selectedResult.status==="RESOLVED"
-                      ? `Resolved because candidate ${selectedResult.matchedRecordIds[0]} achieved the highest unique evidence score (${selectedResult.evidenceScore} pts).`
-                      : selectedResult.status==="AMBIGUOUS"
-                      ? `Multiple candidates received the same highest evidence score (${selectedResult.evidenceScore} pts). LedgerLens does not guess, so this record is flagged for manual investigation.`
-                      : "No compatible candidate was found within the configured reconciliation rules."}
-                  </p>
-                </div>
-                {selectedResult.status==="UNMATCHED"&&(
-                  <div className="space-y-2">
-                    <span className="text-xs font-semibold text-slate-300 block">Candidate Eligibility Checklist</span>
-                    <div className="space-y-1.5 text-xs bg-slate-950/40 p-3 rounded-lg border border-slate-800/60 text-slate-400">
-                      <div className="flex items-center gap-2 text-slate-300">
-                        <Check className="h-3.5 w-3.5 text-slate-500"/>
-                        <span>Supported transaction relationship required ({selectedResult.sourceType} directional pair)</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-300">
-                        <Check className="h-3.5 w-3.5 text-slate-500"/>
-                        <span>Exact currency compatibility required</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-300">
-                        <Check className="h-3.5 w-3.5 text-slate-500"/>
-                        <span>Target timestamp must occur on or after source</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-300">
-                        <Check className="h-3.5 w-3.5 text-slate-500"/>
-                        <span>Target must fall within maximum 7-day window</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-slate-300">
-                        <Check className="h-3.5 w-3.5 text-slate-500"/>
-                        <span>Pair-specific amount compatibility required</span>
-                      </div>
+                <div className="p-4 rounded-xl bg-indigo-950/30 border border-indigo-800/40 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-indigo-400"/>
+                      <span className="text-xs font-bold text-white">AI Case Investigation</span>
                     </div>
+                    {currentAiReport&&(
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded-full border ${
+                          currentAiReport.riskLevel==="LOW"
+                            ? "bg-emerald-950 text-emerald-300 border-emerald-800"
+                            : currentAiReport.riskLevel==="MEDIUM"
+                            ? "bg-amber-950 text-amber-300 border-amber-800"
+                            : "bg-rose-950 text-rose-300 border-rose-800"
+                        }`}>
+                          {currentAiReport.riskLevel} RISK
+                        </span>
+                        <span className="text-[10px] font-mono text-slate-400 px-1.5 py-0.2 rounded bg-slate-900 border border-slate-800">
+                          {currentAiReport.provider.toUpperCase()}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                )}
+                  {currentAiReport?(
+                    <div className="space-y-3 text-xs">
+                      <p className="text-slate-300 leading-relaxed bg-slate-950/60 p-2.5 rounded-lg border border-slate-800/80">
+                        {currentAiReport.summary}
+                      </p>
+                      <div className="space-y-1">
+                        <span className="text-[11px] font-semibold text-slate-400">Why This Verdict:</span>
+                        <p className="text-slate-300 leading-relaxed">{currentAiReport.whyThisStatus}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-[11px] font-semibold text-slate-400">Recommended Action:</span>
+                        <p className="text-indigo-200 font-medium leading-relaxed bg-indigo-950/50 p-2 rounded border border-indigo-800/50">
+                          {currentAiReport.recommendedAction}
+                        </p>
+                      </div>
+                      {currentAiReport.questionsToInvestigate.length>0&&(
+                        <div className="space-y-1.5">
+                          <span className="text-[11px] font-semibold text-slate-400">Questions to Investigate:</span>
+                          <div className="space-y-1">
+                            {currentAiReport.questionsToInvestigate.map((q,idx)=>(
+                              <button
+                                key={idx}
+                                onClick={()=>handleAskQuestion(q)}
+                                className="w-full text-left text-[11px] text-slate-400 hover:text-indigo-300 hover:bg-slate-900/80 p-1.5 rounded transition border border-transparent hover:border-slate-800 flex items-center justify-between group"
+                              >
+                                <span>• {q}</span>
+                                <ChevronRight className="h-3 w-3 opacity-0 group-hover:opacity-100 transition text-indigo-400"/>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ):(
+                    <div className="py-2 text-center text-xs text-slate-400">
+                      <button
+                        onClick={()=>fetchAiReportForRecord(selectedResult.sourceRecordId)}
+                        disabled={isLoadingAiReport}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition"
+                      >
+                        <Bot className="h-3.5 w-3.5"/>
+                        <span>{isLoadingAiReport?"Analyzing Case with AI...":"Generate AI Case Report"}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800 space-y-3">
+                  <div className="flex items-center gap-2 text-xs font-bold text-white">
+                    <MessageSquare className="h-3.5 w-3.5 text-indigo-400"/>
+                    <span>Ask LedgerLens Copilot</span>
+                  </div>
+                  {currentChats.length>0&&(
+                    <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                      {currentChats.map(chat=>(
+                        <div key={chat.id} className="space-y-1.5 text-xs">
+                          <div className="bg-indigo-950/50 p-2 rounded-lg border border-indigo-800/40 text-indigo-200">
+                            <span className="font-semibold text-[10px] text-indigo-400 block uppercase">You asked:</span>
+                            {chat.question}
+                          </div>
+                          <div className="bg-slate-900 p-2 rounded-lg border border-slate-800 text-slate-300 leading-relaxed">
+                            <span className="font-semibold text-[10px] text-slate-400 block uppercase">Copilot:</span>
+                            {chat.answer}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={currentQuestion}
+                      onChange={e=>setCurrentQuestion(e.target.value)}
+                      onKeyDown={e=>{if(e.key==="Enter")handleAskQuestion();}}
+                      placeholder="Ask why this matched, missing criteria, risk..."
+                      className="flex-1 px-3 py-1.5 text-xs bg-slate-900 rounded-lg border border-slate-800 text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+                    />
+                    <button
+                      onClick={()=>handleAskQuestion()}
+                      disabled={isAskingQuestion||!currentQuestion.trim()}
+                      className="p-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-40 transition"
+                    >
+                      <Send className="h-3.5 w-3.5"/>
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {[
+                      "Why was this verdict chosen?",
+                      "What is the operational risk?",
+                      "What action should analyst take?"
+                    ].map((prompt,idx)=>(
+                      <button
+                        key={idx}
+                        onClick={()=>handleAskQuestion(prompt)}
+                        className="text-[10px] px-2 py-0.5 rounded-full bg-slate-900 text-slate-400 hover:text-indigo-300 hover:border-slate-700 border border-slate-800 transition"
+                      >
+                        {prompt}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 {candidatesForSelected.length>0&&(
                   <div className="space-y-2">
                     <span className="text-xs font-semibold text-slate-300 block">Evaluated Candidate Matches</span>
@@ -759,7 +1058,7 @@ export default function DashboardPage(){
             ):(
               <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-8 text-center text-slate-500 text-xs space-y-2">
                 <Target className="h-6 w-6 text-slate-600 mx-auto"/>
-                <p>Select any source record from the table to inspect its deterministic candidate evaluation and scoring breakdown.</p>
+                <p>Select any source record from the table to inspect its deterministic candidate evaluation, AI risk analysis, and copilot Q&A.</p>
               </div>
             )}
           </div>

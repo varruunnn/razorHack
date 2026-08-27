@@ -14,7 +14,8 @@
     "fastify": "latest",
     "@ledgerlens/shared": "workspace:*",
     "@ledgerlens/ingestion": "workspace:*",
-    "@ledgerlens/reconciliation-engine": "workspace:*"
+    "@ledgerlens/reconciliation-engine": "workspace:*",
+    "@ledgerlens/ai-investigator": "workspace:*"
   },
   "devDependencies": {
     "@ledgerlens/synthetic-data": "workspace:*",

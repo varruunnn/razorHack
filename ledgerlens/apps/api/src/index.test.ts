@@ -1,6 +1,6 @@
 import {test,expect} from "bun:test";
 import {buildApp,ApiErrorResponse} from "./app";
-import {Settlement} from "@ledgerlens/shared";
+import {Settlement,FinancialRecord,ReconciliationResult,CandidateMatch,ReconciliationSummary} from "@ledgerlens/shared";
 import {generateDataset} from "@ledgerlens/synthetic-data";
 const app=buildApp();
 test("GET /health returns 200 with status ok",async()=>{
@@ -470,4 +470,144 @@ test("POST /reconcile integration validation using generateDataset with syntheti
     expect(r.flowId).toBeUndefined();
     expect(r.scenario).toBeUndefined();
   }
+});
+test("GET /investigate/info returns 200 with provider info",async()=>{
+  const res=await app.inject({
+    method:"GET",
+    url:"/investigate/info"
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.provider).toBeDefined();
+  expect(typeof json.isAiConfigured).toBe("boolean");
+});
+test("POST /investigate with valid payload returns structured report",async()=>{
+  const mockRecord:FinancialRecord={
+    id:"ord_1",
+    type:"ORDER",
+    amount:10050,
+    currency:"USD",
+    timestamp:new Date("2026-01-01T00:00:00Z"),
+    reference:"ref_1",
+    merchantId:"m_1"
+  };
+  const mockResult:ReconciliationResult={
+    sourceRecordId:"ord_1",
+    sourceType:"ORDER",
+    status:"RESOLVED",
+    matchedRecordIds:["pay_1"],
+    candidateRecordIds:["pay_1"],
+    evidenceScore:140,
+    reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+  };
+  const mockCandidate:CandidateMatch={
+    sourceRecordId:"ord_1",
+    targetRecordId:"pay_1",
+    sourceType:"ORDER",
+    targetType:"PAYMENT",
+    reasons:["EXACT_REFERENCE","CURRENCY_COMPATIBLE","AMOUNT_COMPATIBLE","TIME_WINDOW_COMPATIBLE"]
+  };
+  const res=await app.inject({
+    method:"POST",
+    url:"/investigate",
+    payload:{
+      record:mockRecord,
+      result:mockResult,
+      candidates:[mockCandidate]
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.riskLevel).toBe("LOW");
+  expect(json.summary).toBeDefined();
+  expect(json.whyThisStatus).toBeDefined();
+  expect(json.keyEvidence.length).toBeGreaterThan(0);
+  expect(json.recommendedAction).toBeDefined();
+  expect(json.questionsToInvestigate.length).toBeGreaterThan(0);
+  expect(json.provider).toBeDefined();
+});
+test("POST /investigate returns 400 on invalid payload",async()=>{
+  const res1=await app.inject({
+    method:"POST",
+    url:"/investigate",
+    payload:{}
+  });
+  expect(res1.statusCode).toBe(400);
+  const res2=await app.inject({
+    method:"POST",
+    url:"/investigate",
+    payload:{record:"bad",result:{},candidates:[]}
+  });
+  expect(res2.statusCode).toBe(400);
+});
+test("POST /investigate/summary returns executive summary report",async()=>{
+  const summaryPayload:ReconciliationSummary={
+    totalInputRecords:50,
+    acceptedRecords:50,
+    rejectedRecords:0,
+    resolved:40,
+    ambiguous:5,
+    unmatched:5,
+    candidateCount:45
+  };
+  const res=await app.inject({
+    method:"POST",
+    url:"/investigate/summary",
+    payload:{
+      summary:summaryPayload
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.overview).toBeDefined();
+  expect(json.keyFindings.length).toBeGreaterThanOrEqual(3);
+  expect(json.attentionRequired.length).toBeGreaterThanOrEqual(1);
+  expect(json.recommendedNextSteps.length).toBeGreaterThanOrEqual(1);
+});
+test("POST /investigate/ask returns contextual answer",async()=>{
+  const mockRecord:FinancialRecord={
+    id:"pay_dup",
+    type:"PAYMENT",
+    amount:50000,
+    currency:"USD",
+    timestamp:new Date("2026-01-01T00:00:00Z"),
+    reference:"dup_ref",
+    paymentMethod:"card"
+  };
+  const mockResult:ReconciliationResult={
+    sourceRecordId:"pay_dup",
+    sourceType:"PAYMENT",
+    status:"AMBIGUOUS",
+    matchedRecordIds:[],
+    candidateRecordIds:["stl_1","stl_2"],
+    evidenceScore:140,
+    reasons:[]
+  };
+  const res=await app.inject({
+    method:"POST",
+    url:"/investigate/ask",
+    payload:{
+      question:"Why is this payment ambiguous?",
+      context:{
+        record:mockRecord,
+        result:mockResult,
+        candidates:[]
+      }
+    }
+  });
+  expect(res.statusCode).toBe(200);
+  const json=JSON.parse(res.body);
+  expect(json.answer).toContain("AMBIGUOUS");
+  expect(json.provider).toBeDefined();
+});
+test("POST /investigate/ask returns 400 on empty question or bad context",async()=>{
+  const res=await app.inject({
+    method:"POST",
+    url:"/investigate/ask",
+    payload:{
+      question:"",
+      context:{}
+    }
+  });
+  expect(res.statusCode).toBe(400);
 });

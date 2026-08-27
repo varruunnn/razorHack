@@ -1,149 +1,125 @@
 # LedgerLens
 
-LedgerLens is an AI-assisted financial reconciliation and exception investigation platform.
+LedgerLens is a high-performance financial reconciliation engine and AI-powered exception investigation copilot.
 
 ## High-Level Architecture
 
-The monorepo uses Bun as its package manager and runtime, orchestrated by Turborepo. It features a Next.js dashboard that connects to a Fastify API, which interfaces with a core pure TypeScript reconciliation engine. The database layer uses Prisma.
+The monorepo uses Bun as its package manager and runtime, orchestrated by Turborepo. It features a Next.js dashboard that connects to a Fastify API, which interfaces with a core pure TypeScript reconciliation engine and an AI investigation copilot package.
 
-Architectural Dependency Direction:
-apps/dashboard -> apps/api -> packages/reconciliation-engine -> packages/shared
-
-The database and synthetic-data packages function as infrastructure or distinct tools.
+```
+Raw Financial Data
+        ↓
+Deterministic Ingestion (@ledgerlens/ingestion)
+        ↓
+Deterministic Candidate Discovery (@ledgerlens/reconciliation-engine)
+        ↓
+Deterministic Candidate Resolution (@ledgerlens/reconciliation-engine)
+        ↓
+Structured Reconciliation Result (RESOLVED / AMBIGUOUS / UNMATCHED)
+        ↓
+AI Investigation Layer (@ledgerlens/ai-investigator)
+        ↓
+Executive Briefs, Risk Classifications, and Interactive Copilot Q&A
+```
 
 ## Repository Structure
 
 ```
 ledgerlens/
 ├── apps/
-│   ├── api/ (Fastify API)
-│   └── dashboard/ (Next.js App)
+│   ├── api/ (Fastify API with /reconcile and /investigate endpoints)
+│   └── dashboard/ (Next.js Financial Operations Dashboard)
 │
 ├── packages/
-│   ├── shared/ (Domain types and contracts)
-│   ├── database/ (Prisma ORM and migrations)
-│   ├── reconciliation-engine/ (Core logic)
-│   ├── synthetic-data/ (Dataset generation)
-│   └── ingestion/ (Raw record validation and normalization)
+│   ├── shared/ (Domain contracts, result types, AI schemas)
+│   ├── ingestion/ (Raw record validation and normalization)
+│   ├── reconciliation-engine/ (Deterministic candidate discovery and resolution)
+│   ├── ai-investigator/ (Gemini, OpenAI, and deterministic fallback copilot)
+│   ├── synthetic-data/ (Deterministic financial flow generator)
+│   └── database/ (Prisma schema)
 ```
 
 ## Prerequisites
 
-- Bun
+- [Bun](https://bun.sh/) (v1.1+)
 
-## Installation
+## Quick Start
 
+### 1. Install Dependencies
 ```sh
 bun install
 ```
 
-## Development
+### 2. Configure Environment Variables (Optional for AI Copilot)
+Create a `.env` file in the root directory (or set in your shell):
 
-To start the development servers:
+```env
+# Optional: Google Gemini API Key for LLM-powered audit reports
+GEMINI_API_KEY=your_gemini_api_key_here
 
+# Optional: OpenAI API Key (alternative provider)
+# OPENAI_API_KEY=your_openai_api_key_here
+
+# Optional: Override API port
+PORT=3001
+```
+
+> **Note**: If no API key is provided, LedgerLens automatically runs in **Deterministic Fallback Mode**, generating rule-grounded investigation reports and answers with zero external dependencies.
+
+### 3. Run Development Servers
 ```sh
 bun run dev
 ```
+- **Dashboard**: `http://localhost:3000`
+- **Fastify API**: `http://localhost:3001`
 
-## Typechecking
+### 4. Run Automated Tests
+```sh
+bun test
+```
 
-To typecheck the entire workspace:
-
+### 5. Run Workspace Typecheck
 ```sh
 bun run typecheck
 ```
 
-## Building
-
-To build all apps and packages:
-
+### 6. Build Production Bundles
 ```sh
 bun run build
 ```
 
-## Synthetic Financial Universe
+## Deterministic Reconciliation Pipeline
 
-The `synthetic-data` package generates realistic financial flows. 
+1. **Ingestion & Normalization (`POST /ingestions`)**:
+   - Safely parses major and minor decimal strings/numbers into integer minor units without floating-point errors.
+   - Normalizes field aliases (`transaction_id`, `created_at`, `fee`, etc.).
+   - Rejection boundary isolates malformed records without halting valid batch processing.
 
-- **Visible dataset vs Hidden ground truth**: The generator outputs `dataset` containing visible records (Orders, Payments, Settlements) and `groundTruth` containing the true relationships and scenarios.
-- **Supported scenarios**: Generates CLEAN, PARTIAL_REFUND, DELAYED_SETTLEMENT, MISSING_BANK_ENTRY, SPLIT_SETTLEMENT, DUPLICATE_REFERENCE, ADJUSTMENT, UNRESOLVED cases.
-- **Deterministic generation**: Outputs identical datasets when provided the same seed.
-- **Money representation**: All monetary values are integer minor units (e.g., `10050` means `100.50`).
+2. **Candidate Discovery (`discoverCandidates`)**:
+   - Directional pairing: `ORDER -> PAYMENT`, `PAYMENT -> SETTLEMENT`, `PAYMENT -> REFUND`, `PAYMENT -> ADJUSTMENT`, `SETTLEMENT -> BANK_ENTRY`.
+   - Prerequisites: currency match, chronological order within a 7-day temporal window, and pair-specific amount bounds.
 
-To run the synthetic data tests:
-```sh
-cd packages/synthetic-data
-bun test
-```
+3. **Candidate Resolution (`resolveCandidates`)**:
+   - Evaluates multi-evidence scoring weights:
+     - `EXACT_REFERENCE`: 100 pts
+     - `AMOUNT_COMPATIBLE`: 20 pts
+     - `CURRENCY_COMPATIBLE`: 10 pts
+     - `TIME_WINDOW_COMPATIBLE`: 10 pts
+   - Status assignment:
+     - `RESOLVED`: Exactly one candidate holds the strictly highest score.
+     - `AMBIGUOUS`: Competing candidates tie for the highest score (flagged for review; never guessed).
+     - `UNMATCHED`: No valid candidate found.
 
-## Ingestion & Normalization
+## AI Investigation Layer (`@ledgerlens/ai-investigator`)
 
-The `ingestion` package validates untrusted raw financial inputs and normalizes them into canonical domain records (`FinancialRecord`).
+The AI layer acts strictly as an **Explainer** and **Investigation Copilot** on top of the deterministic results:
 
-- **Batch processing**: Evaluates each raw record individually and returns `{ records, rejected }`.
-- **Field alias mapping**: Normalizes `transaction_id`, `created_at`, `transaction_amount`, `fee`, etc.
-- **Money normalization**: Safely parses major and minor decimal strings/numbers into integer minor units without floating-point arithmetic.
-- **Timestamp normalization**: Supports ISO strings, Unix seconds, and Unix milliseconds.
-
-To run the ingestion tests:
-```sh
-cd packages/ingestion
-bun test
-```
-
-## Reconciliation Engine: Candidate Discovery (Phase 3A)
-
-The `reconciliation-engine` package provides deterministic candidate discovery across canonical `FinancialRecord` arrays.
-
-- **Purpose**: Generates potential relationship candidate pairs without making final match decisions.
-- **Supported directional pairs**:
-  - `ORDER -> PAYMENT`
-  - `PAYMENT -> SETTLEMENT`
-  - `PAYMENT -> REFUND`
-  - `PAYMENT -> ADJUSTMENT`
-  - `SETTLEMENT -> BANK_ENTRY`
-- **Compatibility prerequisites**:
-  - Exact currency match (`CURRENCY_COMPATIBLE`).
-  - Valid timestamp ordering within 7 days / $604,800,000\text{ ms}$ (`TIME_WINDOW_COMPATIBLE`).
-  - Pair-specific amount rules (`AMOUNT_COMPATIBLE`):
-    - `ORDER -> PAYMENT`: Exact equality (`source.amount === target.amount`).
-    - `PAYMENT -> SETTLEMENT`: Subset / equal (`target.amount <= source.amount`).
-    - `PAYMENT -> REFUND`: Subset / equal (`target.amount <= source.amount`).
-    - `PAYMENT -> ADJUSTMENT`: Absolute value bounded (`Math.abs(target.amount) <= source.amount`).
-    - `SETTLEMENT -> BANK_ENTRY`: Exact equality (`source.amount === target.amount`).
-- **Reference evidence**: Exact string match adds `EXACT_REFERENCE` (deterministic reason order: `EXACT_REFERENCE`, `CURRENCY_COMPATIBLE`, `AMOUNT_COMPATIBLE`, `TIME_WINDOW_COMPATIBLE`).
-- **Ambiguity preservation**: Multiple candidates per source record are preserved without scoring or premature resolution.
-
-To run the reconciliation engine tests:
-```sh
-cd packages/reconciliation-engine
-bun test
-```
-
-## Reconciliation Engine: Candidate Resolution (Phase 3B)
-
-The `reconciliation-engine` provides deterministic candidate resolution (`resolveCandidates`) across canonical records and discovered candidate matches.
-
-- **Supported Source Types**: `ORDER`, `PAYMENT`, and `SETTLEMENT` records receive exactly one resolution result. Terminal targets (`REFUND`, `ADJUSTMENT`, `BANK_ENTRY`) do not independently generate source resolution results.
-- **Evidence Weighting Model**:
-  - `EXACT_REFERENCE`: 100
-  - `AMOUNT_COMPATIBLE`: 20
-  - `CURRENCY_COMPATIBLE`: 10
-  - `TIME_WINDOW_COMPATIBLE`: 10
-- **Statuses**:
-  - `UNMATCHED`: Source record has zero candidate matches (`evidenceScore: 0`, `reasons: []`, `matchedRecordIds: []`, `candidateRecordIds: []`).
-  - `RESOLVED`: Exactly one candidate holds the strictly highest evidence score (`matchedRecordIds: [winner]`, `candidateRecordIds: rankedList`, `evidenceScore: highestScore`, `reasons: winnerReasons`).
-  - `AMBIGUOUS`: Two or more candidates tie for the highest evidence score (`matchedRecordIds: []`, `candidateRecordIds: competingWinnersLexicographicallySorted`, `evidenceScore: highestScore`, `reasons: []`). Lower-scoring candidates are omitted from `candidateRecordIds`.
-- **Determinism**: Results and candidates are sorted deterministically, ensuring that input ordering differences never impact semantic output.
-
-## Reconciliation API: End-to-End Pipeline (Phase 4A)
-
-The Fastify API exposes the full ingestion and reconciliation pipeline via `POST /reconcile`.
-
-- **Pipeline Execution**:
-  1. `normalizeRecords(records)`: Normalizes raw inputs into canonical `FinancialRecord` and captures `RejectedRecord` items.
-  2. `discoverCandidates(records)`: Identifies all compatible directional pairs.
-  3. `resolveCandidates(records, candidates)`: Computes evidence scores and determines `RESOLVED`, `AMBIGUOUS`, or `UNMATCHED` status.
-- **Batch Resiliency**: Normalization rejections do not abort the reconciliation of remaining valid records in the batch.
-- **Response Contract**: Returns HTTP 200 containing execution `summary`, normalized `records`, `rejected` records, `candidates`, and final reconciliation `results`.
-
+- **Audit Investigation Reports (`POST /investigate`)**:
+  - Structured case finding, rule justification, key evidence breakdown, operational risk level (`LOW` | `MEDIUM` | `HIGH`), recommended actions, and investigative questions.
+- **Executive Reconciliation Summary (`POST /investigate/summary`)**:
+  - Generates high-level management briefs, key findings, exception highlights, and next steps strictly grounded in real summary metrics.
+- **Interactive Copilot Q&A (`POST /investigate/ask`)**:
+  - Allows operations analysts to ask contextual questions (*"Why was this verdict chosen?"*, *"What action should I take?"*, *"What is the operational risk?"*).
+- **Multi-Provider & Fallback Safety**:
+  - Supports Google Gemini and OpenAI with graceful timeout and automatic fallback to local deterministic analysis if keys are missing or network calls fail.
+  - Zero hallucination of record IDs or ground truth.
