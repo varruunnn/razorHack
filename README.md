@@ -4,26 +4,26 @@ LedgerLens is a financial reconciliation and exception investigation platform th
 
 ## Problem
 
-Modern organizations process financial events across fragmented systems, including commerce platforms, payment gateways, merchant processors, ERP ledgers, and bank clearing networks. Orders, payments, settlements, refunds, fee adjustments, and bank statement lines often reside in isolated data stores with differing timestamps, schema conventions, currency formatting, and reference identifiers. 
+Modern organizations process financial events across fragmented systems, including commerce platforms, payment gateways, merchant processors, ERP ledgers, and bank clearing networks. Orders, payments, settlements, refunds, fee adjustments, and bank statement lines often reside in isolated data stores with differing timestamps, schema conventions, currency formatting, and reference identifiers.
 
 Connecting and reconciling these records reliably is critical for closing financial books and detecting revenue leakage. As transaction volumes grow, manual reconciliation becomes error-prone and costly. LedgerLens addresses this challenge by automatically resolving high-confidence transaction pairs through deterministic evidence scoring while isolating exceptions and surfacing actionable investigation context. LedgerLens functions as an analytical reconciliation pipeline and does not replace core transactional databases.
 
 ## Solution
 
-LedgerLens implements a multi-stage reconciliation workflow:
+LedgerLens implements a structured multi-stage reconciliation workflow:
 
 ```
 Raw Financial Records
         ↓
 Ingestion & Normalization
         ↓
-Candidate Discovery
+Candidate Discovery (Hard Eligibility Rules)
         ↓
-Evidence Scoring
+Evidence Scoring (Additive Weights)
         ↓
 Deterministic Resolution (RESOLVED / AMBIGUOUS / UNMATCHED)
         ↓
-Investigation & Analyst Action Layer
+AI Investigation & Analyst Action Layer
         ↓
 Operations Dashboard
 ```
@@ -31,6 +31,16 @@ Operations Dashboard
 The system strictly decouples **deterministic reconciliation** from the **investigation layer**:
 - **Deterministic Core**: Pure TypeScript engine evaluating explicit compatibility rules, temporal windows, and evidence point thresholds. It holds sole authority over match decisions.
 - **Investigation Layer**: Downstream analytical copilot powered by Gemini (with a deterministic rule fallback) that consumes finalized reconciliation results to assess operational risk, assign attention priorities, and generate concrete analyst action items.
+
+## Why Deterministic First?
+
+Financial reconciliation demands complete auditability, repeatability, and mathematical precision. In financial operations, an algorithm must never "guess" a link or hide ambiguity behind a non-deterministic similarity metric. 
+
+LedgerLens enforces a deterministic-first architecture:
+- **Hard Rules Determine Eligibility**: Transactions are only paired if they satisfy strict domain relationships, identical currencies, valid chronological order, and amount boundaries.
+- **Explicit Evidence Determines Ranking**: Candidate matches are scored using visible, auditable evidence criteria (+100 for exact reference, +20 for amount, +10 for currency, +10 for temporal window).
+- **Ambiguity Is Surfaced, Never Guessed**: When multiple candidate records share identical evidence scores, LedgerLens flags the flow as `AMBIGUOUS` for analyst review rather than making an arbitrary choice.
+- **AI Is Strictly Downstream**: Large language models are leveraged exclusively for explaining verified outcomes, summarizing batch health, and recommending analyst workflows.
 
 ## Key Features
 
@@ -48,9 +58,9 @@ The system strictly decouples **deterministic reconciliation** from the **invest
 - **Next.js Dashboard**: Dark operations console with KPI metrics, filterable results, and candidate visualizer.
 - **Rejected-Record Inspector**: Dedicated interface for reviewing schema validation failures.
 - **Analyst Action Engine**: Structured case investigation with risk classifications (`LOW`, `MEDIUM`, `HIGH`) and attention levels (`REVIEW_REQUIRED`, `MONITOR`, `NO_ACTION`).
-- **Gemini Integration**: Automated natural-language case briefs, executive summaries, and conversational Q&A.
+- **Gemini Integration**: Automated natural-language case briefs, executive summaries, and conversational Q&A (`gemini-1.5-flash`).
 - **Deterministic Fallback**: Comprehensive rule-grounded investigation reports when external providers are unconfigured.
-- **Full Test Coverage**: 122 automated unit and integration tests across the workspace.
+- **Automated Test Coverage**: 122 automated unit and integration tests across the workspace.
 
 ## Architecture
 
@@ -75,7 +85,48 @@ The architecture consists of modular TypeScript packages organized in a monorepo
 4. **API Application (`apps/api`)**: Fastify server exposing ingestion, reconciliation, and investigation endpoints.
 5. **Dashboard Application (`apps/dashboard`)**: Next.js single-page application for operational review.
 
+## End-to-End Flow
+
+```
+User (Browser)
+      ↓
+Next.js Dashboard (apps/dashboard)
+      ↓ Load Demo Data (generateDataset in memory)
+      ↓ Click "Run Reconciliation"
+Fastify API (POST /reconcile)
+      ↓ normalizeRecords()
+      ↓ discoverCandidates()
+      ↓ resolveCandidates()
+Reconciliation Result JSON (summary, records, rejected, candidates, results)
+      ↓
+Next.js Dashboard (Render KPI Cards, Results Table, and Rejections)
+      ↓ Automatic Batch Brief (POST /investigate/summary)
+      ↓ On Record Select (POST /investigate)
+      ↓ On Analyst Q&A (POST /investigate/ask)
+AI Investigation Layer (Gemini 1.5 Flash / Deterministic Fallback)
+      ↓
+Finance & Operations Analyst
+```
+
 ## Reconciliation Pipeline
+
+LedgerLens does **not** perform naive all-to-all record comparisons or assign arbitrary similarity scores. Every transaction passes through three explicit stages: hard eligibility filtering, deterministic evidence scoring, and candidate resolution.
+
+```
+Raw Record Batch
+       ↓
+1. Ingestion & Normalization
+       ↓
+2. Hard Eligibility Checks (Currency, Chronology, 7-Day Window, Directional Amount Bounds)
+       ↓
+3. Candidate Discovered? ──(No)──→ Mark UNMATCHED (Score: 0)
+       ↓ (Yes)
+4. Evidence Scoring (Exact Reference +100, Amount +20, Currency +10, Time Window +10)
+       ↓
+5. Candidate Ranking & Score Comparison
+       ├── Unique Highest Score ──→ RESOLVED
+       └── Top Score Tie ──────────→ AMBIGUOUS (Never Guessed)
+```
 
 ### 1. Ingestion and Normalization
 The ingestion engine receives raw objects (`RawRecord`) containing heterogeneous alias names (such as `transaction_id`, `created_at`, `transaction_amount`, or `fee`). It executes:
@@ -85,26 +136,30 @@ The ingestion engine receives raw objects (`RawRecord`) containing heterogeneous
 - **Batch Resiliency**: Invalid entries are appended to a typed `rejected` array with specific failure codes, while valid entries continue to candidate discovery.
 
 ### 2. Candidate Discovery
-The engine evaluates potential relationships across canonical records based on directional domain rules:
-- `ORDER -> PAYMENT`
-- `PAYMENT -> SETTLEMENT`
-- `PAYMENT -> REFUND`
-- `PAYMENT -> ADJUSTMENT`
-- `SETTLEMENT -> BANK_ENTRY`
+The engine evaluates potential relationships across canonical records based on directional domain rules. Unsupported type combinations (such as `ORDER -> SETTLEMENT` or `BANK_ENTRY -> ORDER`) are never evaluated as candidate matches.
 
-A pair is accepted as a candidate match only if it satisfies four baseline constraints:
+| Source Record | Target Record | Amount Eligibility Rule | Purpose |
+| :--- | :--- | :--- | :--- |
+| `ORDER` | `PAYMENT` | Exact equality (`source.amount === target.amount`) | Confirm order payment |
+| `PAYMENT` | `SETTLEMENT` | Subset or equality (`target.amount <= source.amount`) | Settlement net of fees / batch payouts |
+| `PAYMENT` | `REFUND` | Subset or equality (`target.amount <= source.amount`) | Refund cannot exceed original payment |
+| `PAYMENT` | `ADJUSTMENT` | Absolute value bound (`Math.abs(target.amount) <= source.amount`) | Handle positive/negative fee or dispute adjustments |
+| `SETTLEMENT` | `BANK_ENTRY` | Exact equality (`source.amount === target.amount`) | Confirm bank clearing |
+
+A pair is accepted as a candidate match only if it satisfies all four baseline constraints:
 1. **Currency Compatibility**: Currencies must be identical (`source.currency === target.currency`).
 2. **Chronological Ordering**: Target timestamp must occur at or after source timestamp (`target.timestamp >= source.timestamp`).
-3. **Temporal Window**: Target must occur within 7 days ($604,800,000\text{ ms}$) of the source. This temporal threshold is a configurable operational assumption for the pipeline.
-4. **Relationship Amount Compatibility**:
-   - `ORDER -> PAYMENT`: Exact equality (`source.amount === target.amount`).
-   - `PAYMENT -> SETTLEMENT`: Subset or equality (`target.amount <= source.amount`).
-   - `PAYMENT -> REFUND`: Subset or equality (`target.amount <= source.amount`).
-   - `PAYMENT -> ADJUSTMENT`: Absolute value bound (`Math.abs(target.amount) <= source.amount`).
-   - `SETTLEMENT -> BANK_ENTRY`: Exact equality (`source.amount === target.amount`).
+3. **Temporal Window**: Target must occur within 7 days ($604,800,000\text{ ms}$) of the source. This 7-day temporal window is a configurable operational assumption for the pipeline rather than a universal financial law.
+4. **Relationship Amount Compatibility**: Must satisfy the specific relationship amount rule listed in the table above.
 
 ### 3. Evidence Scoring
-Discovered candidate pairs receive deterministic evidence points:
+Evidence points are calculated **only** after a candidate pair passes all hard eligibility checks. A candidate pair does not receive points for being "somewhat similar":
+- Currency mismatch $\rightarrow$ eliminated immediately (0 points, no candidate created).
+- Target timestamp preceding source $\rightarrow$ eliminated immediately.
+- Target outside the 7-day temporal window $\rightarrow$ eliminated immediately.
+- Amount outside relationship boundary $\rightarrow$ eliminated immediately.
+
+Eligible candidates receive deterministic additive points:
 
 | Evidence Criterion | Points | Rule Condition |
 | :--- | :--- | :--- |
@@ -113,47 +168,112 @@ Discovered candidate pairs receive deterministic evidence points:
 | `CURRENCY_COMPATIBLE` | 10 | Exact currency code match |
 | `TIME_WINDOW_COMPATIBLE` | 10 | Chronological order satisfied within 7-day temporal window |
 
-The maximum possible evidence score is **140**. This score represents deterministic rule weight, not an artificial confidence estimate.
+The maximum possible evidence score is **140** ($100 + 20 + 10 + 10$). An eligible candidate without a matching reference receives a baseline score of **40** ($20 + 10 + 10$). This is deterministic evidence weighting, not an AI confidence probability.
 
 ### 4. Resolution
 Source records (`ORDER`, `PAYMENT`, `SETTLEMENT`) receive one of three mutually exclusive outcomes:
 - **`RESOLVED`**: Exactly one candidate holds the strictly highest evidence score. The winning candidate ID is recorded in `matchedRecordIds`.
-- **`AMBIGUOUS`**: Two or more candidates tie for the highest evidence score (e.g., duplicate references or identical amounts within the same window). Competing candidate IDs are captured in `candidateRecordIds`, and `matchedRecordIds` remains empty. The engine refuses to guess without differentiating evidence.
+- **`AMBIGUOUS`**: Two or more candidates tie for the highest evidence score. Competing candidate IDs are captured in `candidateRecordIds`, and `matchedRecordIds` remains empty. The engine refuses to guess without differentiating evidence.
 - **`UNMATCHED`**: Zero candidates satisfied the discovery rules.
+
+#### Ambiguity and Resolution Examples
+
+**Example 1: Ambiguous Score Tie**
+```
+Payment P (₹10,000, Ref: REF-100)
+├── Settlement A (₹9,950, Fee: ₹50, Ref: REF-100) → Evidence Score: 140
+└── Settlement B (₹9,950, Fee: ₹50, Ref: REF-100) → Evidence Score: 140
+
+Outcome: AMBIGUOUS
+matchedRecordIds: []
+candidateRecordIds: ["stl_A", "stl_B"]
+```
+*LedgerLens deliberately refuses to guess between equally strong candidates.*
+
+**Example 2: Resolved Unique Winner**
+```
+Payment P (₹10,000, Ref: REF-100)
+├── Settlement A (₹9,950, Fee: ₹50, Ref: REF-100) → Evidence Score: 140
+└── Settlement B (₹9,950, Fee: ₹50, Ref: REF-999) → Evidence Score: 40
+
+Outcome: RESOLVED
+matchedRecordIds: ["stl_A"]
+candidateRecordIds: ["stl_A", "stl_B"]
+```
 
 ## Financial Scenarios
 
-The synthetic data package (`@ledgerlens/synthetic-data`) deterministically generates realistic transaction lifecycles covering 8 distinct scenarios:
+The synthetic data package (`@ledgerlens/synthetic-data`) deterministically generates realistic transaction lifecycles covering 8 distinct scenarios. These scenarios exist to exercise specific reconciliation behaviors:
 
-- **`CLEAN`**: Standard end-to-end lifecycle (`ORDER -> PAYMENT -> SETTLEMENT -> BANK_ENTRY`) with matching references and amounts.
-- **`PARTIAL_REFUND`**: Successful order and payment followed by a customer refund for a subset of the original amount.
-- **`DELAYED_SETTLEMENT`**: Settlement generated past the standard temporal boundary, testing window compatibility.
-- **`MISSING_BANK_ENTRY`**: Flow where processor settlement occurs but corresponding bank clearing line is omitted.
-- **`SPLIT_SETTLEMENT`**: Single payment cleared across multiple smaller settlement records whose sum equals the principal.
-- **`DUPLICATE_REFERENCE`**: Distinct transactions sharing the same merchant reference code, creating genuine ambiguity.
-- **`ADJUSTMENT`**: Payment associated with processor fee corrections or disputed charge adjustments.
-- **`UNRESOLVED`**: Discrepancies intentionally missing target records to test exception surfacing.
+- **`CLEAN`**: Tests the standard end-to-end 4-leg reconciliation flow (`ORDER -> PAYMENT -> SETTLEMENT -> BANK_ENTRY`) with matching references and fees.
+- **`PARTIAL_REFUND`**: Tests subset amount compatibility and multi-target discovery (`PAYMENT -> REFUND` and `PAYMENT -> SETTLEMENT`).
+- **`DELAYED_SETTLEMENT`**: Tests temporal boundary enforcement by generating settlements beyond the 7-day window to verify candidate exclusion.
+- **`MISSING_BANK_ENTRY`**: Tests exception handling when processor settlements occur but corresponding bank clearing lines are omitted.
+- **`SPLIT_SETTLEMENT`**: Tests single payments cleared across multiple partial settlement records whose sum equals the net principal.
+- **`DUPLICATE_REFERENCE`**: Tests ambiguity handling when identical merchant references appear across independent transaction flows.
+- **`ADJUSTMENT`**: Tests positive and negative ledger adjustment bounds (`Math.abs(amount) <= payment.amount`).
+- **`UNRESOLVED`**: Tests exception surfacing when counterpart records are missing from the ingestion dataset.
 
 ### Role of Ground Truth
-Synthetic datasets generate two components: a visible `dataset` containing raw financial records and a separate `groundTruth` object mapping true lifecycle relationships. Visible records contain no hidden foreign keys or relationship indicators. Ground truth is used exclusively by automated tests to verify engine precision.
+Synthetic datasets generate two distinct objects:
+1. **Visible Dataset (`dataset.records`)**: The collection of canonical financial records received and processed by LedgerLens. Visible records contain no hidden foreign keys or relationship indicators.
+2. **Ground Truth (`groundTruth.relations`)**: A separate relational map used strictly in automated test suites to verify matching precision.
+
+The reconciliation engine does **not** receive ground truth. The AI investigator does **not** receive ground truth.
 
 ## AI Investigation Layer
 
-The AI investigation layer (`@ledgerlens/ai-investigator`) functions as a post-reconciliation copilot. It never participates in match discovery or score calculation.
+The AI investigation layer (`@ledgerlens/ai-investigator`) functions strictly as a post-reconciliation copilot.
 
-Key design principles:
-- **Downstream Operation**: Invoked only after deterministic reconciliation completes.
-- **Immutable Results**: Cannot alter statuses, match arrays, candidate rankings, or evidence scores.
-- **Zero Ground-Truth Access**: Operates solely on visible record fields (`id`, `amount`, `currency`, `timestamp`, `reference`) and candidate rule reasons.
-- **Analyst Action Classification**:
-  - **Risk Levels**: `LOW` (clean resolved matches), `MEDIUM` (unmatched items or partial evidence), `HIGH` (ambiguous candidate ties or large unlinked amounts).
-  - **Attention Levels**: `NO_ACTION` (high-scoring resolved records), `MONITOR` (lower-score matches requiring review), `REVIEW_REQUIRED` (all ambiguous and unmatched records).
-- **Structured Schema**: Validates all provider output against typed contracts (`InvestigationReport`, `ExecutiveSummaryReport`, `AskInvestigationResponse`).
-- **Deterministic Fallback**: Automatically activates rule-based narrative generation when no API key is provided or when network timeouts occur.
+```
+Deterministic Engine
+        ↓
+Final Reconciliation Result (RESOLVED / AMBIGUOUS / UNMATCHED)
+        ↓
+AI Investigator
+        ↓
+Structured Output: Explanation / Risk / Recommended Actions / Copilot Q&A
+```
+
+### Operational Boundaries
+
+Gemini does **NOT**:
+- Discover matches
+- Calculate evidence scores
+- Select winners
+- Resolve ambiguity
+- Modify reconciliation results
+- Access hidden ground truth
+
+Gemini **DOES**:
+- Explain deterministic results using visible record fields and score criteria
+- Summarize batch health for leadership
+- Classify operational risk (`LOW`, `MEDIUM`, `HIGH`) and attention levels (`REVIEW_REQUIRED`, `MONITOR`, `NO_ACTION`)
+- Recommend concrete next steps for finance analysts
+- Answer contextual case questions
+
+### Provider Configuration & Fallback
+
+The package supports Google Gemini via the Google AI REST API (`gemini-1.5-flash` primary model, with fallback support for `gemini-2.0-flash` and `gemini-1.5-flash-8b`), as well as OpenAI (`gpt-4o-mini`).
+
+Provider resolution priority:
+1. If `options.preferredProvider` is set, it selects that provider if configured.
+2. Checks `GEMINI_API_KEY` or `GOOGLE_API_KEY` (selects Gemini).
+3. Checks `OPENAI_API_KEY` (selects OpenAI).
+4. If no API key is present, or if an API call fails or times out, it automatically falls back to **Deterministic Fallback Mode**.
+
+The deterministic fallback generates structured investigation reports matching the identical TypeScript schema with zero external network requests.
+
+## Database Status
+
+The repository contains `@ledgerlens/database` with a Prisma schema configured for PostgreSQL.
+
+- **Demo Runtime**: The current demo processes transaction batches in memory for instant local execution without requiring database setup.
+- **Production Architecture**: In an enterprise deployment, `@ledgerlens/database` attaches persistent event logs, transaction tables, and audit history to the pipeline.
 
 ## API
 
-The backend Fastify server (`apps/api`) runs on port 3001 and enforces a 1000-record batch limit on ingestion payloads.
+The backend Fastify server (`apps/api`) runs on port 3001 and enforces a 1000-record batch limit (`MAX_BATCH_SIZE = 1000`).
 
 ### `GET /health`
 Returns service operational status.
@@ -234,16 +354,16 @@ Answers contextual case questions from operations analysts.
 
 ## Dashboard
 
-The Next.js dashboard (`apps/dashboard`) provides an interactive interface for financial operations:
-- **Data Ingestion Controls**: Load synthetic demo flows or submit custom transaction batches.
-- **Reconciliation Trigger**: Dispatches batch to `POST /reconcile` and updates client state.
+The Next.js dashboard (`apps/dashboard`) provides an interactive console for financial operations:
+- **Load Demo Data**: Generates synthetic multi-scenario transaction flows in client memory.
+- **Run Reconciliation**: Submits the batch to `POST /reconcile` and updates client state.
 - **KPI Summary Cards**: Real-time counters for Total Records, Ingested, Resolved, Ambiguous, Unmatched, and Ingestion Rejections.
-- **Executive AI Brief**: High-level batch analysis detailing key findings and required operational follow-ups.
+- **Executive AI Brief**: Automated batch synthesis detailing key findings, attention items, and recommended next steps.
 - **Filterable Results Table**: Search and filter by status (`ALL`, `RESOLVED`, `AMBIGUOUS`, `UNMATCHED`, `REJECTED`), record ID, or reference.
-- **Analyst Action Panel**: Dedicated case inspector displaying Risk Level (`LOW`, `MEDIUM`, `HIGH`), Attention Level (`REVIEW_REQUIRED`, `MONITOR`, `NO_ACTION`), narrative justification, and numbered next steps.
+- **Analyst Action Panel**: Dedicated case inspector displaying Risk Level (`LOW`, `MEDIUM`, `HIGH`), Attention Level (`REVIEW_REQUIRED`, `MONITOR`, `NO_ACTION`), narrative justification, and numbered action items.
 - **Evidence Breakdown**: Visual point score allocation (`+100`, `+20`, `+10`, `+10`).
-- **Interactive Copilot**: Natural-language Q&A chat for real-time case inquiry.
-- **Rejected Record Inspector**: Raw JSON and error reason inspection for schema failures.
+- **Interactive Copilot**: Real-time Q&A chat for investigating specific case nuances.
+- **Rejected Record Inspector**: Dedicated tab for inspecting raw payload failures and diagnostic rejection reasons.
 
 ## Project Structure
 
@@ -366,7 +486,8 @@ bun run build
 - **Frontend Framework**: Next.js (App Router)
 - **UI Library**: React, Tailwind CSS v4
 - **Icons**: Lucide React
-- **AI Integration**: Google Gemini API (`gemini-1.5-flash`)
+- **AI Integration**: Google Gemini API (`gemini-1.5-flash`, with `gemini-2.0-flash` / `gemini-1.5-flash-8b` fallback and optional OpenAI `gpt-4o-mini` support)
+- **Database Layer**: Prisma (`@ledgerlens/database`, schema configured for PostgreSQL; runtime operates in memory for demo)
 
 ## Final Notes
 
